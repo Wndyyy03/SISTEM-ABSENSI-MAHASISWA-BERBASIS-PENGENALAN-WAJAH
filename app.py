@@ -257,22 +257,31 @@ def halaman_dashboard():
     </div>
     """, unsafe_allow_html=True)
 
-    db     = muat_database()
-    total_mhs = len(db)
+    if st.button("🔄 Refresh Data", type="secondary"):
+        st.rerun()
 
+    import pandas as pd
+
+    db = muat_database()
+    total_mhs = len(db)
+    tanggal_hari_ini = datetime.now().strftime("%Y-%m-%d")
     total_absensi = 0
     hadir_hari_ini = 0
-    tanggal_hari_ini = datetime.now().strftime("%Y-%m-%d")
+    df_rekap = None
 
     if os.path.exists(REKAP_FILE):
-        with open(REKAP_FILE, "r") as f:
-            rows = list(csv.reader(f))[1:]
-        total_absensi  = len(rows)
-        hadir_hari_ini = sum(1 for r in rows if len(r) >= 3 and r[2] == tanggal_hari_ini)
+        try:
+            df_rekap = pd.read_csv(REKAP_FILE, dtype=str).fillna("")
+            if not df_rekap.empty:
+                total_absensi = len(df_rekap)
+                if "Tanggal" in df_rekap.columns:
+                    hadir_hari_ini = len(df_rekap[df_rekap["Tanggal"] == tanggal_hari_ini])
+        except Exception:
+            df_rekap = None
 
     c1, c2, c3, c4 = st.columns(4)
     for col, num, lbl in [
-        (c1, total_mhs,    "Total Mahasiswa"),
+        (c1, total_mhs,      "Total Mahasiswa"),
         (c2, hadir_hari_ini, "Hadir Hari Ini"),
         (c3, total_absensi,  "Total Absensi"),
         (c4, len(DAFTAR_MATKUL), "Mata Kuliah"),
@@ -290,15 +299,10 @@ def halaman_dashboard():
 
     with col_a:
         st.markdown("#### 📋 Absensi Hari Ini")
-        if os.path.exists(REKAP_FILE):
-            with open(REKAP_FILE, "r") as f:
-                rows = list(csv.reader(f))
-            header = rows[0] if rows else []
-            data_hari = [r for r in rows[1:] if len(r) >= 3 and r[2] == tanggal_hari_ini]
-            if data_hari:
-                import pandas as pd
-                df = pd.DataFrame(data_hari, columns=header[:len(data_hari[0])])
-                st.dataframe(df, use_container_width=True, hide_index=True)
+        if df_rekap is not None and not df_rekap.empty and "Tanggal" in df_rekap.columns:
+            df_hari = df_rekap[df_rekap["Tanggal"] == tanggal_hari_ini]
+            if not df_hari.empty:
+                st.dataframe(df_hari, use_container_width=True, hide_index=True)
             else:
                 st.info("Belum ada absensi hari ini.")
         else:
@@ -307,7 +311,6 @@ def halaman_dashboard():
     with col_b:
         st.markdown("#### 👤 Mahasiswa Terdaftar")
         if db:
-            import pandas as pd
             data_mhs = [{"NIM": v.get("nim", k), "Nama": v.get("nama", "-")} if isinstance(v, dict) else {"NIM": k, "Nama": str(v)} for k, v in db.items()]
             st.dataframe(pd.DataFrame(data_mhs), use_container_width=True, hide_index=True)
         else:
