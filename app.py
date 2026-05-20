@@ -114,20 +114,37 @@ def ambil_fitur_wajah(gray_roi):
     roi = cv2.equalizeHist(roi)
     return roi.flatten().astype(np.float64)
 
-def cocokkan_wajah(encoding_baru, database, threshold=0.35):
+def cocokkan_wajah(encoding_baru, database, threshold=0.75):
+    """
+    Cocokkan wajah dengan database menggunakan cosine similarity.
+    Threshold dinaikkan ke 0.75 agar lebih ketat (minimal 75% mirip).
+    Juga menggunakan jarak euclidean sebagai validasi tambahan.
+    """
     best_nim, best_nama, best_skor = None, None, -1
+    best_jarak = float("inf")
+
+    a = encoding_baru / (np.linalg.norm(encoding_baru) + 1e-6)
+
     for nim, data in database.items():
         if not isinstance(data, dict) or "encoding" not in data:
             continue
         enc_db = data["encoding"]
-        a = encoding_baru / (np.linalg.norm(encoding_baru) + 1e-6)
         b = enc_db / (np.linalg.norm(enc_db) + 1e-6)
-        skor = np.dot(a, b)
+
+        # Cosine similarity
+        skor = float(np.dot(a, b))
+
+        # Euclidean distance (makin kecil makin mirip)
+        jarak = float(np.linalg.norm(a - b))
+
         if skor > best_skor:
-            best_skor = skor
-            best_nim  = nim
-            best_nama = data.get("nama", nim)
-    if best_skor >= threshold:
+            best_skor  = skor
+            best_jarak = jarak
+            best_nim   = nim
+            best_nama  = data.get("nama", nim)
+
+    # Harus memenuhi KEDUA syarat: cosine tinggi DAN jarak kecil
+    if best_skor >= threshold and best_jarak <= 0.8:
         return best_nim, best_nama, best_skor
     return None, None, best_skor
 
@@ -432,6 +449,7 @@ def halaman_absensi():
 
                     img_show = Image.fromarray(cv2.cvtColor(tampilan, cv2.COLOR_BGR2RGB))
                     st.image(img_show, use_column_width=True)
+                    st.info(f"🎯 Tingkat kecocokan wajah: **{skor*100:.1f}%**")
 
                     berhasil, info = catat_absensi(nim, nama, matkul, kelas)
                     if berhasil:
@@ -455,7 +473,8 @@ def halaman_absensi():
                     st.markdown(f"""
                     <div class='gagal-box'>
                         ❌ Wajah tidak dikenali<br>
-                        <span style='font-size:13px'>Skor kemiripan: {skor:.2f} (minimum 0.35)</span>
+                        <span style='font-size:13px'>Skor kemiripan: {skor*100:.1f}% (minimum 75%)<br>
+                        Pastikan pencahayaan cukup dan wajah menghadap kamera dengan jelas.</span>
                     </div>
                     """, unsafe_allow_html=True)
         else:
