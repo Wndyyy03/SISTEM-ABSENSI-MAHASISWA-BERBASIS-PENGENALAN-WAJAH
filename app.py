@@ -657,7 +657,12 @@ def halaman_rekap():
         st.info("Data absensi masih kosong.")
         return
 
-    header = list(df.columns)
+    # Gunakan kolom standar agar tidak crash jika file CSV lama punya kolom berbeda
+    header = ["NIM", "Nama", "Tanggal", "Waktu", "Mata Kuliah", "Kelas", "Status"]
+    for col in header:
+        if col not in df.columns:
+            df[col] = ""
+    df = df[header]
 
     if is_dosen:
         tab1, tab2, tab3 = st.tabs(["📋 Semua Data", "📅 Filter", "📥 Export"])
