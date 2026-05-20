@@ -306,7 +306,7 @@ def halaman_dashboard():
         st.markdown("#### 👤 Mahasiswa Terdaftar")
         if db:
             import pandas as pd
-            data_mhs = [{"NIM": v.get("nim", k), "Nama": v.get("nama", "-")} if isinstance(v, dict) else {"NIM": k, "Nama": str(v)} for k, v in db.items()]
+            data_mhs = [{"NIM": v["nim"], "Nama": v["nama"]} for v in db.values()]
             st.dataframe(pd.DataFrame(data_mhs), use_container_width=True, hide_index=True)
         else:
             st.info("Belum ada mahasiswa terdaftar.")
@@ -518,9 +518,10 @@ def halaman_daftar():
                     pilihan_hapus.append(nim_key)
             nim_hapus = st.selectbox("Pilih mahasiswa yang akan dihapus", options=pilihan_hapus)
             if st.button("🗑️ Hapus dari Database", type="secondary"):
-                nim_key = nim_hapus.split(" - ")[0]
+                nim_key = nim_hapus.split(" - ")[0].strip()
                 if nim_key in db:
-                    nama_hapus = db[nim_key]["nama"]
+                    v = db[nim_key]
+                    nama_hapus = v.get("nama", nim_key) if isinstance(v, dict) else str(v)
                     del db[nim_key]
                     simpan_database(db)
                     st.success(f"✅ {nama_hapus} berhasil dihapus.")
@@ -619,7 +620,7 @@ def halaman_user():
     import pandas as pd
 
     st.markdown(f"#### Daftar User ({len(users)} akun)")
-    data_user = [{"Username": k, "Nama": v.get("nama","-") if isinstance(v,dict) else "-", "Role": v.get("role","").upper() if isinstance(v,dict) else "-"}
+    data_user = [{"Username": k, "Nama": v["nama"], "Role": v["role"].upper()}
                  for k, v in users.items()]
     st.dataframe(pd.DataFrame(data_user), use_container_width=True, hide_index=True)
 
