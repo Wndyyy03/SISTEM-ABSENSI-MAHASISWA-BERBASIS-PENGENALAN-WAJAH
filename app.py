@@ -1,6 +1,7 @@
 """
 SISTEM ABSENSI MAHASISWA BERBASIS PENGENALAN WAJAH
 Versi Streamlit - Universitas Muhammadiyah Makassar
+Menggunakan DeepFace (tidak butuh dlib/cmake)
 """
 
 import streamlit as st
@@ -14,12 +15,12 @@ from datetime import datetime
 from PIL import Image
 import io
 
-# Gunakan face_recognition untuk akurasi tinggi (deep learning 128-dimensi)
+# Gunakan DeepFace untuk akurasi tinggi tanpa dlib
 try:
-    import face_recognition
-    FACE_REC_AVAILABLE = True
+    from deepface import DeepFace
+    DEEPFACE_AVAILABLE = True
 except ImportError:
-    FACE_REC_AVAILABLE = False
+    DEEPFACE_AVAILABLE = False
 
 # ── Konfigurasi Halaman ───────────────────────────────────────────────────────
 st.set_page_config(
@@ -116,63 +117,75 @@ def simpan_database(db):
     with open(DB_FILE, "wb") as f:
         pickle.dump(db, f)
 
-def ambil_fitur_wajah(gray_roi, frame_bgr=None, loc=None):
-    """
-    Ekstrak encoding wajah 128-dimensi menggunakan deep learning (face_recognition).
-    Fallback ke pixel flatten jika library tidak tersedia.
-    """
-    if FACE_REC_AVAILABLE and frame_bgr is not None and loc is not None:
-        try:
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            top, right, bottom, left = loc
-            encodings = face_recognition.face_encodings(frame_rgb, [(top, right, bottom, left)])
-            if encodings:
-                return encodings[0]
-        except Exception:
-            pass
-    # Fallback
+def ambil_fitur_wajah_deepface(image_path):
+    """Ekstrak embedding 512-dimensi menggunakan DeepFace (Facenet512)."""
+    try:
+        result = DeepFace.represent(
+            img_path=image_path,
+            model_name="Facenet512",
+            enforce_detection=False,
+            detector_backend="opencv"
+        )
+        if result and len(result) > 0:
+            return np.array(result[0]["embedding"])
+    except Exception as e:
+        st.error(f"DeepFace error: {e}")
+    return None
+
+def ambil_fitur_wajah_fallback(gray_roi):
+    """Fallback: LBPH histogram."""
     roi = cv2.resize(gray_roi, (128, 128))
     roi = cv2.equalizeHist(roi)
-    return roi.flatten().astype(np.float64)
+    lbph = np.zeros((256,), dtype=np.float64)
+    for i in range(1, roi.shape[0]-1):
+        for j in range(1, roi.shape[1]-1):
+            center = roi[i, j]
+            code = 0
+            neighbors = [
+                roi[i-1,j-1], roi[i-1,j], roi[i-1,j+1],
+                roi[i,j+1], roi[i+1,j+1], roi[i+1,j],
+                roi[i+1,j-1], roi[i,j-1]
+            ]
+            for k, n in enumerate(neighbors):
+                if n >= center:
+                    code |= (1 << k)
+            lbph[code] += 1
+    lbph = lbph / (lbph.sum() + 1e-6)
+    return lbph
 
-def cocokkan_wajah(encoding_baru, database, threshold=0.45):
+def cocokkan_wajah(encoding_baru, database):
     """
-    Cocokkan wajah menggunakan face_recognition (deep learning 128-dim).
-    Threshold 0.45 = sangat ketat (standar industri 0.6, kita lebih ketat).
-    Makin kecil jarak = makin mirip.
+    DeepFace: threshold euclidean distance <= 200 (Facenet512)
+    Fallback: cosine similarity >= 0.92
     """
-    best_nim, best_nama, best_jarak = None, None, float("inf")
-
-    is_deep = FACE_REC_AVAILABLE and len(encoding_baru) == 128
+    best_nim, best_nama, best_skor = None, None, 0.0
+    is_deep = DEEPFACE_AVAILABLE and len(encoding_baru) == 512
 
     for nim, data in database.items():
         if not isinstance(data, dict) or "encoding" not in data:
             continue
         enc_db = data["encoding"]
+        if enc_db is None:
+            continue
+        try:
+            if is_deep and len(enc_db) == 512:
+                jarak = float(np.linalg.norm(encoding_baru - enc_db))
+                skor = max(0.0, 1.0 - jarak / 400.0)
+                cocok = jarak <= 200.0
+            else:
+                a = encoding_baru / (np.linalg.norm(encoding_baru) + 1e-6)
+                b = enc_db / (np.linalg.norm(enc_db) + 1e-6)
+                skor = float(np.dot(a, b))
+                cocok = skor >= 0.92
+            if skor > best_skor:
+                best_skor = skor
+                if cocok:
+                    best_nim  = nim
+                    best_nama = data.get("nama", nim)
+        except Exception:
+            continue
 
-        if is_deep and len(enc_db) == 128:
-            # face_recognition: gunakan euclidean distance (makin kecil = makin mirip)
-            jarak = float(np.linalg.norm(encoding_baru - enc_db))
-        else:
-            # Fallback cosine similarity → ubah ke "jarak" agar konsisten
-            a = encoding_baru / (np.linalg.norm(encoding_baru) + 1e-6)
-            b = enc_db / (np.linalg.norm(enc_db) + 1e-6)
-            jarak = 1.0 - float(np.dot(a, b))  # 0 = identik, 2 = berlawanan
-
-        if jarak < best_jarak:
-            best_jarak = jarak
-            best_nim   = nim
-            best_nama  = data.get("nama", nim)
-
-    # Skor untuk ditampilkan (persentase kemiripan)
-    if is_deep:
-        skor_tampil = max(0.0, 1.0 - best_jarak / 0.6)
-    else:
-        skor_tampil = max(0.0, 1.0 - best_jarak)
-
-    if best_jarak <= threshold:
-        return best_nim, best_nama, skor_tampil
-    return None, None, skor_tampil
+    return best_nim, best_nama, best_skor
 
 def catat_absensi(nim, nama, matkul, kelas):
     sekarang = datetime.now()
@@ -192,27 +205,26 @@ def catat_absensi(nim, nama, matkul, kelas):
     return True, waktu
 
 def deteksi_wajah_dari_gambar(image_bytes):
-    """Deteksi wajah dari gambar yang diupload / difoto."""
-    nparr  = np.frombuffer(image_bytes, np.uint8)
-    frame  = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if frame is None:
         return None, None, None
-    gray   = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    wajah  = CASCADE.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=5, minSize=(60, 60))
+    gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    wajah = CASCADE.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=5, minSize=(60, 60))
     return frame, gray, wajah
 
-def gambar_ke_bytes(frame_bgr):
-    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    img = Image.fromarray(frame_rgb)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG")
-    return buf.getvalue()
+def simpan_gambar_sementara(image_bytes, nim):
+    path  = os.path.join(DATA_DIR, f"temp_{nim}.jpg")
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    cv2.imwrite(path, frame)
+    return path
 
 # ── Inisialisasi Session State ────────────────────────────────────────────────
-if "logged_in"   not in st.session_state: st.session_state.logged_in   = False
-if "user_info"   not in st.session_state: st.session_state.user_info   = None
-if "halaman"     not in st.session_state: st.session_state.halaman     = "dashboard"
-if "absensi_ok"  not in st.session_state: st.session_state.absensi_ok  = None
+if "logged_in"  not in st.session_state: st.session_state.logged_in  = False
+if "user_info"  not in st.session_state: st.session_state.user_info  = None
+if "halaman"    not in st.session_state: st.session_state.halaman    = "dashboard"
+if "absensi_ok" not in st.session_state: st.session_state.absensi_ok = None
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HALAMAN LOGIN
@@ -240,17 +252,14 @@ def halaman_login():
                 if user:
                     st.session_state.logged_in = True
                     st.session_state.user_info = {**user, "username": username}
-                    if user["role"] == "dosen":
-                        st.session_state.halaman = "rekap"
-                    else:
-                        st.session_state.halaman = "dashboard"
+                    st.session_state.halaman   = "rekap" if user["role"] == "dosen" else "dashboard"
                     st.rerun()
                 else:
                     st.error("Username atau password salah!")
 
         with tab_mhs:
             with st.form("form_login_mhs"):
-                nim_input = st.text_input("NIM", placeholder="contoh: 105841100121")
+                nim_input  = st.text_input("NIM", placeholder="contoh: 105841100121")
                 submit_mhs = st.form_submit_button("Masuk", use_container_width=True, type="primary")
             if submit_mhs:
                 db = muat_database()
@@ -273,8 +282,8 @@ def halaman_login():
         <div style='background:#161b22; border:1px solid #30363d; border-radius:8px;
                     padding:12px; margin-top:16px; font-size:12px; color:#8b949e'>
             <b style='color:#ffd740'>Default login:</b><br>
-            Admin &nbsp;→ admin / admin123<br>
-            Dosen &nbsp;→ dosen / dosen123<br>
+            Admin → admin / admin123<br>
+            Dosen → dosen / dosen123<br>
             Mahasiswa → masuk dengan NIM yang sudah terdaftar
         </div>
         """, unsafe_allow_html=True)
@@ -286,7 +295,6 @@ def sidebar_navigasi():
     with st.sidebar:
         user = st.session_state.user_info
         role = user.get("role", "")
-
         ikon_role = "🎓" if role == "mahasiswa" else "👨‍🏫" if role == "dosen" else "⚙️"
         st.markdown(f"""
         <div style='background:#161b22; border:1px solid #30363d; border-radius:10px;
@@ -300,14 +308,10 @@ def sidebar_navigasi():
         st.markdown("**Menu Utama**")
 
         if role == "mahasiswa":
-            menus = [
-                ("📸", "Absensi Wajah", "absensi"),
-            ]
+            menus = [("📸", "Absensi Wajah", "absensi")]
         elif role == "dosen":
-            menus = [
-                ("📊", "Rekap Absensi", "rekap"),
-            ]
-        else:  # admin
+            menus = [("📊", "Rekap Absensi", "rekap")]
+        else:
             menus = [
                 ("🏠", "Dashboard",        "dashboard"),
                 ("📸", "Absensi Wajah",    "absensi"),
@@ -345,13 +349,12 @@ def halaman_dashboard():
         st.rerun()
 
     import pandas as pd
-
     db = muat_database()
-    total_mhs = len(db)
+    total_mhs        = len(db)
     tanggal_hari_ini = datetime.now().strftime("%Y-%m-%d")
-    total_absensi = 0
-    hadir_hari_ini = 0
-    df_rekap = None
+    total_absensi    = 0
+    hadir_hari_ini   = 0
+    df_rekap         = None
 
     if os.path.exists(REKAP_FILE):
         try:
@@ -365,10 +368,10 @@ def halaman_dashboard():
 
     c1, c2, c3, c4 = st.columns(4)
     for col, num, lbl in [
-        (c1, total_mhs,      "Total Mahasiswa"),
-        (c2, hadir_hari_ini, "Hadir Hari Ini"),
-        (c3, total_absensi,  "Total Absensi"),
-        (c4, len(DAFTAR_MATKUL), "Mata Kuliah"),
+        (c1, total_mhs,           "Total Mahasiswa"),
+        (c2, hadir_hari_ini,      "Hadir Hari Ini"),
+        (c3, total_absensi,       "Total Absensi"),
+        (c4, len(DAFTAR_MATKUL),  "Mata Kuliah"),
     ]:
         with col:
             st.markdown(f"""
@@ -385,17 +388,18 @@ def halaman_dashboard():
         st.markdown("#### 📋 Absensi Hari Ini")
         if df_rekap is not None and not df_rekap.empty and "Tanggal" in df_rekap.columns:
             df_hari = df_rekap[df_rekap["Tanggal"] == tanggal_hari_ini]
-            if not df_hari.empty:
-                st.dataframe(df_hari, use_container_width=True, hide_index=True)
-            else:
-                st.info("Belum ada absensi hari ini.")
+            st.dataframe(df_hari, use_container_width=True, hide_index=True) if not df_hari.empty else st.info("Belum ada absensi hari ini.")
         else:
             st.info("Belum ada data absensi.")
 
     with col_b:
         st.markdown("#### 👤 Mahasiswa Terdaftar")
         if db:
-            data_mhs = [{"NIM": v.get("nim", k), "Nama": v.get("nama", "-")} if isinstance(v, dict) else {"NIM": k, "Nama": str(v)} for k, v in db.items()]
+            data_mhs = [
+                {"NIM": v.get("nim", k), "Nama": v.get("nama", "-")} if isinstance(v, dict)
+                else {"NIM": k, "Nama": str(v)}
+                for k, v in db.items()
+            ]
             st.dataframe(pd.DataFrame(data_mhs), use_container_width=True, hide_index=True)
         else:
             st.info("Belum ada mahasiswa terdaftar.")
@@ -411,14 +415,14 @@ def halaman_absensi():
     </div>
     """, unsafe_allow_html=True)
 
-    if FACE_REC_AVAILABLE:
-        st.success("🤖 Menggunakan **Deep Learning** (face_recognition) — akurasi tinggi, sulit ditipu.")
+    if DEEPFACE_AVAILABLE:
+        st.success("🤖 Menggunakan **DeepFace (Facenet512)** — akurasi tinggi, sulit ditipu.")
     else:
-        st.warning("⚠️ Library `face_recognition` tidak terinstall. Tambahkan ke `requirements.txt`: `face_recognition`. Saat ini menggunakan metode pixel (kurang akurat).")
+        st.warning("⚠️ DeepFace tidak terinstall. Tambahkan `deepface` ke `requirements.txt`. Saat ini menggunakan metode LBPH.")
 
     db = muat_database()
     if not db:
-        st.warning("⚠️ Database wajah kosong! Daftarkan mahasiswa dulu di menu **Daftar Mahasiswa**.")
+        st.warning("⚠️ Database kosong! Daftarkan mahasiswa dulu di menu Daftar Mahasiswa.")
         return
 
     col1, col2 = st.columns([1, 1])
@@ -446,43 +450,41 @@ def halaman_absensi():
 
         if foto_bytes:
             frame, gray, wajah_list = deteksi_wajah_dari_gambar(foto_bytes)
-
             if frame is None:
-                st.error("Gagal membaca gambar. Coba lagi.")
+                st.error("Gagal membaca gambar.")
                 return
 
             tampilan = frame.copy()
 
             if len(wajah_list) == 0:
-                st.markdown("<div class='gagal-box'>❌ Tidak ada wajah terdeteksi.<br>Pastikan wajah terlihat jelas dan cahaya cukup.</div>",
-                            unsafe_allow_html=True)
-                img_show = Image.fromarray(cv2.cvtColor(tampilan, cv2.COLOR_BGR2RGB))
-                st.image(img_show, use_column_width=True)
+                st.markdown("<div class='gagal-box'>❌ Tidak ada wajah terdeteksi.</div>", unsafe_allow_html=True)
+                st.image(Image.fromarray(cv2.cvtColor(tampilan, cv2.COLOR_BGR2RGB)), use_column_width=True)
 
             elif len(wajah_list) > 1:
-                st.markdown("<div class='gagal-box'>⚠️ Lebih dari 1 wajah terdeteksi.<br>Pastikan hanya 1 orang dalam foto.</div>",
-                            unsafe_allow_html=True)
+                st.markdown("<div class='gagal-box'>⚠️ Lebih dari 1 wajah. Pastikan hanya 1 orang.</div>", unsafe_allow_html=True)
                 for (x, y, fw, fh) in wajah_list:
                     cv2.rectangle(tampilan, (x,y), (x+fw,y+fh), (0,0,255), 2)
-                img_show = Image.fromarray(cv2.cvtColor(tampilan, cv2.COLOR_BGR2RGB))
-                st.image(img_show, use_column_width=True)
+                st.image(Image.fromarray(cv2.cvtColor(tampilan, cv2.COLOR_BGR2RGB)), use_column_width=True)
 
             else:
                 (x, y, fw, fh) = wajah_list[0]
                 roi = gray[y:y+fh, x:x+fw]
-                # Konversi koordinat OpenCV (x,y,w,h) ke face_recognition (top,right,bottom,left)
-                loc = (y, x+fw, y+fh, x)
-                encoding = ambil_fitur_wajah(roi, frame_bgr=frame, loc=loc)
+
+                if DEEPFACE_AVAILABLE:
+                    img_path = simpan_gambar_sementara(foto_bytes, "absensi_temp")
+                    encoding = ambil_fitur_wajah_deepface(img_path)
+                    if encoding is None:
+                        encoding = ambil_fitur_wajah_fallback(roi)
+                else:
+                    encoding = ambil_fitur_wajah_fallback(roi)
+
                 nim, nama, skor = cocokkan_wajah(encoding, db)
 
                 if nim:
                     cv2.rectangle(tampilan, (x,y), (x+fw,y+fh), (0,255,0), 3)
-                    cv2.putText(tampilan, f"{nama}", (x, y-10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
-
-                    img_show = Image.fromarray(cv2.cvtColor(tampilan, cv2.COLOR_BGR2RGB))
-                    st.image(img_show, use_column_width=True)
-                    st.info(f"🎯 Tingkat kecocokan wajah: **{skor*100:.1f}%**")
+                    cv2.putText(tampilan, f"{nama}", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+                    st.image(Image.fromarray(cv2.cvtColor(tampilan, cv2.COLOR_BGR2RGB)), use_column_width=True)
+                    st.info(f"🎯 Tingkat kecocokan: **{skor*100:.1f}%**")
 
                     berhasil, info = catat_absensi(nim, nama, matkul, kelas)
                     if berhasil:
@@ -494,20 +496,14 @@ def halaman_absensi():
                         </div>
                         """, unsafe_allow_html=True)
                     else:
-                        st.markdown(f"""
-                        <div class='info-box'>
-                            ℹ️ {nama} sudah absen hari ini untuk mata kuliah ini.
-                        </div>
-                        """, unsafe_allow_html=True)
+                        st.markdown(f"<div class='info-box'>ℹ️ {nama} sudah absen hari ini.</div>", unsafe_allow_html=True)
                 else:
                     cv2.rectangle(tampilan, (x,y), (x+fw,y+fh), (0,0,255), 3)
-                    img_show = Image.fromarray(cv2.cvtColor(tampilan, cv2.COLOR_BGR2RGB))
-                    st.image(img_show, use_column_width=True)
+                    st.image(Image.fromarray(cv2.cvtColor(tampilan, cv2.COLOR_BGR2RGB)), use_column_width=True)
                     st.markdown(f"""
                     <div class='gagal-box'>
                         ❌ Wajah tidak dikenali<br>
-                        <span style='font-size:13px'>Skor kemiripan: {skor*100:.1f}% (minimum 75%)<br>
-                        Pastikan pencahayaan cukup dan wajah menghadap kamera dengan jelas.</span>
+                        <span style='font-size:13px'>Skor: {skor*100:.1f}% — pastikan pencahayaan cukup dan wajah menghadap kamera.</span>
                     </div>
                     """, unsafe_allow_html=True)
         else:
@@ -515,7 +511,7 @@ def halaman_absensi():
             <div style='background:#161b22; border:1px dashed #30363d; border-radius:10px;
                         padding:40px; text-align:center; color:#8b949e'>
                 <div style='font-size:48px'>📷</div>
-                <p>Upload foto atau gunakan kamera browser<br>untuk memulai absensi</p>
+                <p>Upload foto atau gunakan kamera untuk memulai absensi</p>
             </div>
             """, unsafe_allow_html=True)
 
@@ -543,7 +539,7 @@ def halaman_daftar():
             sumber = st.radio("Sumber Foto", ["Upload File", "Kamera Browser"], horizontal=True, key="sumber_daftar")
             foto_bytes = None
             if sumber == "Upload File":
-                uploaded = st.file_uploader("Upload foto wajah yang jelas", type=["jpg","jpeg","png"], key="upload_daftar")
+                uploaded = st.file_uploader("Upload foto wajah", type=["jpg","jpeg","png"], key="upload_daftar")
                 if uploaded:
                     foto_bytes = uploaded.read()
             else:
@@ -557,15 +553,12 @@ def halaman_daftar():
                 frame, gray, wajah_list = deteksi_wajah_dari_gambar(foto_bytes)
                 if frame is not None:
                     tampilan = frame.copy()
+                    for (x,y,fw,fh) in wajah_list:
+                        cv2.rectangle(tampilan, (x,y), (x+fw,y+fh), (0,255,0), 2)
+                    st.image(Image.fromarray(cv2.cvtColor(tampilan, cv2.COLOR_BGR2RGB)), use_column_width=True)
                     if len(wajah_list) > 0:
-                        for (x,y,fw,fh) in wajah_list:
-                            cv2.rectangle(tampilan, (x,y), (x+fw,y+fh), (0,255,0), 2)
-                        st.image(Image.fromarray(cv2.cvtColor(tampilan, cv2.COLOR_BGR2RGB)),
-                                 use_column_width=True)
                         st.success(f"✅ {len(wajah_list)} wajah terdeteksi")
                     else:
-                        st.image(Image.fromarray(cv2.cvtColor(tampilan, cv2.COLOR_BGR2RGB)),
-                                 use_column_width=True)
                         st.error("❌ Tidak ada wajah terdeteksi. Ganti foto.")
 
             if st.button("💾 Simpan ke Database", type="primary", use_container_width=True):
@@ -576,24 +569,30 @@ def halaman_daftar():
                 else:
                     frame, gray, wajah_list = deteksi_wajah_dari_gambar(foto_bytes)
                     if frame is None or len(wajah_list) == 0:
-                        st.error("Wajah tidak terdeteksi dalam foto. Gunakan foto yang lebih jelas.")
+                        st.error("Wajah tidak terdeteksi. Gunakan foto yang lebih jelas.")
                     elif len(wajah_list) > 1:
-                        st.error("Lebih dari 1 wajah terdeteksi. Gunakan foto dengan 1 orang saja.")
+                        st.error("Lebih dari 1 wajah. Gunakan foto 1 orang saja.")
                     else:
-                        (x,y,fw,fh) = wajah_list[0]
-                        roi = gray[y:y+fh, x:x+fw]
-                        loc = (y, x+fw, y+fh, x)
-                        encoding = ambil_fitur_wajah(roi, frame_bgr=frame, loc=loc)
-
                         nama_file = f"{nim}_{nama.replace(' ','_')}.jpg"
-                        cv2.imwrite(os.path.join(DATA_DIR, nama_file), frame)
+                        img_path  = os.path.join(DATA_DIR, nama_file)
+                        cv2.imwrite(img_path, frame)
 
-                        db = muat_database()
-                        db[nim] = {"nama": nama.strip(), "nim": nim.strip(), "encoding": encoding}
-                        simpan_database(db)
-                        metode = "deep learning (face_recognition)" if FACE_REC_AVAILABLE and len(encoding) == 128 else "pixel comparison"
-                        st.success(f"✅ **{nama}** ({nim}) berhasil didaftarkan menggunakan {metode}! Total: {len(db)} mahasiswa.")
-                        st.balloons()
+                        if DEEPFACE_AVAILABLE:
+                            encoding = ambil_fitur_wajah_deepface(img_path)
+                            metode   = "DeepFace Facenet512"
+                        else:
+                            (x,y,fw,fh) = wajah_list[0]
+                            encoding = ambil_fitur_wajah_fallback(gray[y:y+fh, x:x+fw])
+                            metode   = "LBPH fallback"
+
+                        if encoding is None:
+                            st.error("Gagal mengekstrak fitur wajah. Coba foto lain.")
+                        else:
+                            db = muat_database()
+                            db[nim] = {"nama": nama.strip(), "nim": nim.strip(), "encoding": encoding}
+                            simpan_database(db)
+                            st.success(f"✅ **{nama}** ({nim}) berhasil didaftarkan dengan {metode}! Total: {len(db)} mahasiswa.")
+                            st.balloons()
 
     with tab2:
         db = muat_database()
@@ -602,20 +601,20 @@ def halaman_daftar():
             import pandas as pd
             data = []
             for i, (nim_key, v) in enumerate(db.items()):
+                enc = v.get("encoding") if isinstance(v, dict) else None
+                metode = "DeepFace" if enc is not None and isinstance(enc, np.ndarray) and len(enc) == 512 else "LBPH"
                 if isinstance(v, dict):
-                    data.append({"No": i+1, "NIM": v.get("nim", nim_key), "Nama": v.get("nama", "-")})
+                    data.append({"No": i+1, "NIM": v.get("nim", nim_key), "Nama": v.get("nama", "-"), "Metode": metode})
                 else:
-                    data.append({"No": i+1, "NIM": nim_key, "Nama": str(v)})
+                    data.append({"No": i+1, "NIM": nim_key, "Nama": str(v), "Metode": "-"})
             st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
 
             st.divider()
             st.markdown("#### ❌ Hapus Mahasiswa")
-            pilihan_hapus = []
-            for nim_key, v in db.items():
-                if isinstance(v, dict):
-                    pilihan_hapus.append(f"{v.get('nim', nim_key)} - {v.get('nama', '-')}")
-                else:
-                    pilihan_hapus.append(nim_key)
+            pilihan_hapus = [
+                f"{v.get('nim', k)} - {v.get('nama', '-')}" if isinstance(v, dict) else k
+                for k, v in db.items()
+            ]
             nim_hapus = st.selectbox("Pilih mahasiswa yang akan dihapus", options=pilihan_hapus)
             if st.button("🗑️ Hapus dari Database", type="secondary"):
                 nim_key = nim_hapus.split(" - ")[0].strip()
@@ -640,7 +639,7 @@ def halaman_rekap():
     </div>
     """, unsafe_allow_html=True)
 
-    role = st.session_state.user_info.get("role", "admin")
+    role     = st.session_state.user_info.get("role", "admin")
     is_dosen = role == "dosen"
 
     if not os.path.exists(REKAP_FILE):
@@ -651,7 +650,7 @@ def halaman_rekap():
     try:
         df = pd.read_csv(REKAP_FILE, dtype=str).fillna("")
     except Exception:
-        st.error("File rekap absensi rusak atau tidak bisa dibaca.")
+        st.error("File rekap rusak.")
         return
 
     if df.empty:
@@ -661,133 +660,100 @@ def halaman_rekap():
     header = list(df.columns)
 
     if is_dosen:
-        tabs = st.tabs(["📋 Semua Data", "📅 Filter", "📥 Export"])
-        tab1, tab2, tab3 = tabs
+        tab1, tab2, tab3 = st.tabs(["📋 Semua Data", "📅 Filter", "📥 Export"])
         tab4 = None
     else:
         tab1, tab2, tab3, tab4 = st.tabs(["📋 Semua Data", "📅 Filter", "📥 Export", "🗑️ Hapus Data"])
 
     with tab1:
-        st.markdown(f"#### Semua Rekap Absensi ({len(df)} catatan)")
+        st.markdown(f"#### Semua Rekap ({len(df)} catatan)")
         st.dataframe(df, use_container_width=True, hide_index=True)
-
         st.divider()
-        st.markdown("#### Ringkasan Per Mahasiswa")
         if "NIM" in df.columns and "Nama" in df.columns:
-            ringkasan = df.groupby(["NIM","Nama"]).size().reset_index(name="Jumlah Hadir")
-            st.dataframe(ringkasan, use_container_width=True, hide_index=True)
+            st.markdown("#### Ringkasan Per Mahasiswa")
+            st.dataframe(df.groupby(["NIM","Nama"]).size().reset_index(name="Jumlah Hadir"),
+                         use_container_width=True, hide_index=True)
 
     with tab2:
         col1, col2, col3 = st.columns(3)
-        with col1:
-            filter_tgl = st.date_input("Filter Tanggal", value=None)
-        with col2:
-            if "Mata Kuliah" in df.columns:
-                filter_mk = st.selectbox("Filter Mata Kuliah", ["Semua"] + DAFTAR_MATKUL)
-            else:
-                filter_mk = "Semua"
-        with col3:
-            if "Kelas" in df.columns:
-                filter_kls = st.selectbox("Filter Kelas", ["Semua"] + DAFTAR_KELAS)
-            else:
-                filter_kls = "Semua"
+        with col1: filter_tgl = st.date_input("Filter Tanggal", value=None)
+        with col2: filter_mk  = st.selectbox("Mata Kuliah", ["Semua"] + DAFTAR_MATKUL)
+        with col3: filter_kls = st.selectbox("Kelas", ["Semua"] + DAFTAR_KELAS)
 
-        df_filter = df.copy()
-        if filter_tgl:
-            df_filter = df_filter[df_filter["Tanggal"] == str(filter_tgl)]
-        if filter_mk != "Semua" and "Mata Kuliah" in df_filter.columns:
-            df_filter = df_filter[df_filter["Mata Kuliah"] == filter_mk]
-        if filter_kls != "Semua" and "Kelas" in df_filter.columns:
-            df_filter = df_filter[df_filter["Kelas"] == filter_kls]
+        df_f = df.copy()
+        if filter_tgl: df_f = df_f[df_f["Tanggal"] == str(filter_tgl)]
+        if filter_mk  != "Semua" and "Mata Kuliah" in df_f.columns: df_f = df_f[df_f["Mata Kuliah"] == filter_mk]
+        if filter_kls != "Semua" and "Kelas"       in df_f.columns: df_f = df_f[df_f["Kelas"]       == filter_kls]
 
-        st.markdown(f"#### Hasil Filter ({len(df_filter)} data)")
-        st.dataframe(df_filter, use_container_width=True, hide_index=True)
+        st.markdown(f"#### Hasil Filter ({len(df_f)} data)")
+        st.dataframe(df_f, use_container_width=True, hide_index=True)
 
     with tab3:
-        st.markdown("#### Download Data Absensi")
-        csv_data = df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="📥 Download CSV",
-            data=csv_data,
-            file_name=f"rekap_absensi_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-            use_container_width=True,
-            type="primary"
-        )
+        st.download_button("📥 Download CSV", df.to_csv(index=False).encode("utf-8"),
+                           f"rekap_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv",
+                           use_container_width=True, type="primary")
 
     if tab4 is not None:
         with tab4:
             st.markdown("#### 🗑️ Hapus Data Rekap")
             st.warning("⚠️ Data yang dihapus tidak dapat dikembalikan!")
-
-            hapus_mode = st.radio("Pilih metode hapus:", [
-                "Hapus per baris (satu data)",
-                "Hapus berdasarkan tanggal",
-                "Hapus berdasarkan mahasiswa",
-                "Hapus semua data"
+            hapus_mode = st.radio("Metode hapus:", [
+                "Hapus per baris", "Hapus berdasarkan tanggal",
+                "Hapus berdasarkan mahasiswa", "Hapus semua data"
             ])
-
             st.divider()
 
-            if hapus_mode == "Hapus per baris (satu data)":
-                df_tampil = df.copy()
-                df_tampil.insert(0, "No", range(1, len(df_tampil)+1))
-                st.dataframe(df_tampil, use_container_width=True, hide_index=True)
-                pilihan_baris = st.selectbox(
-                    "Pilih baris yang akan dihapus:",
-                    options=range(len(df)),
-                    format_func=lambda i: f"No.{i+1} | {df.iloc[i].get('NIM','?')} - {df.iloc[i].get('Nama','?')} | {df.iloc[i].get('Tanggal','?')} | {df.iloc[i].get('Mata Kuliah','?')}"
-                )
-                if st.button("🗑️ Hapus Baris Ini", type="secondary", use_container_width=True):
-                    df_baru = df.drop(index=pilihan_baris).reset_index(drop=True)
-                    df_baru.to_csv(REKAP_FILE, index=False)
-                    st.success(f"✅ Data baris No.{pilihan_baris+1} berhasil dihapus.")
+            if hapus_mode == "Hapus per baris":
+                df_t = df.copy(); df_t.insert(0, "No", range(1, len(df_t)+1))
+                st.dataframe(df_t, use_container_width=True, hide_index=True)
+                idx = st.selectbox("Pilih baris:", range(len(df)),
+                    format_func=lambda i: f"No.{i+1} | {df.iloc[i].get('NIM','?')} - {df.iloc[i].get('Nama','?')} | {df.iloc[i].get('Tanggal','?')}")
+                if st.button("🗑️ Hapus Baris", type="secondary", use_container_width=True):
+                    df.drop(index=idx).reset_index(drop=True).to_csv(REKAP_FILE, index=False)
+                    st.success(f"✅ Baris No.{idx+1} dihapus.")
                     st.rerun()
 
             elif hapus_mode == "Hapus berdasarkan tanggal":
-                tanggal_list = sorted(df["Tanggal"].unique().tolist()) if "Tanggal" in df.columns else []
-                if not tanggal_list:
-                    st.info("Tidak ada data tanggal.")
+                tgl_list = sorted(df["Tanggal"].unique().tolist()) if "Tanggal" in df.columns else []
+                if not tgl_list:
+                    st.info("Tidak ada data.")
                 else:
-                    tgl_hapus = st.selectbox("Pilih tanggal yang akan dihapus:", tanggal_list)
-                    jumlah = len(df[df["Tanggal"] == tgl_hapus])
-                    st.info(f"📌 {jumlah} data absensi pada tanggal **{tgl_hapus}** akan dihapus.")
-                    if st.button(f"🗑️ Hapus Semua Data Tanggal {tgl_hapus}", type="secondary", use_container_width=True):
-                        df_baru = df[df["Tanggal"] != tgl_hapus].reset_index(drop=True)
-                        df_baru.to_csv(REKAP_FILE, index=False)
-                        st.success(f"✅ {jumlah} data tanggal {tgl_hapus} berhasil dihapus.")
+                    tgl = st.selectbox("Pilih tanggal:", tgl_list)
+                    n   = len(df[df["Tanggal"] == tgl])
+                    st.info(f"📌 {n} data pada {tgl} akan dihapus.")
+                    if st.button(f"🗑️ Hapus Tanggal {tgl}", type="secondary", use_container_width=True):
+                        df[df["Tanggal"] != tgl].reset_index(drop=True).to_csv(REKAP_FILE, index=False)
+                        st.success(f"✅ {n} data tanggal {tgl} dihapus.")
                         st.rerun()
 
             elif hapus_mode == "Hapus berdasarkan mahasiswa":
                 if "NIM" not in df.columns:
-                    st.info("Kolom NIM tidak ditemukan.")
+                    st.info("Kolom NIM tidak ada.")
                 else:
-                    mhs_list = df.groupby(["NIM","Nama"]).size().reset_index()
-                    pilihan_mhs = [f"{r['NIM']} - {r['Nama']}" for _, r in mhs_list.iterrows()]
-                    mhs_hapus = st.selectbox("Pilih mahasiswa:", pilihan_mhs)
-                    nim_hapus = mhs_hapus.split(" - ")[0].strip()
-                    jumlah = len(df[df["NIM"] == nim_hapus])
-                    st.info(f"📌 {jumlah} data absensi milik **{mhs_hapus}** akan dihapus.")
-                    if st.button(f"🗑️ Hapus Semua Data {mhs_hapus}", type="secondary", use_container_width=True):
-                        df_baru = df[df["NIM"] != nim_hapus].reset_index(drop=True)
-                        df_baru.to_csv(REKAP_FILE, index=False)
-                        st.success(f"✅ {jumlah} data absensi {mhs_hapus} berhasil dihapus.")
+                    mhs_list   = df.groupby(["NIM","Nama"]).size().reset_index()
+                    pilih_mhs  = [f"{r['NIM']} - {r['Nama']}" for _, r in mhs_list.iterrows()]
+                    mhs_hapus  = st.selectbox("Pilih mahasiswa:", pilih_mhs)
+                    nim_h      = mhs_hapus.split(" - ")[0].strip()
+                    n          = len(df[df["NIM"] == nim_h])
+                    st.info(f"📌 {n} data {mhs_hapus} akan dihapus.")
+                    if st.button(f"🗑️ Hapus {mhs_hapus}", type="secondary", use_container_width=True):
+                        df[df["NIM"] != nim_h].reset_index(drop=True).to_csv(REKAP_FILE, index=False)
+                        st.success(f"✅ {n} data dihapus.")
                         st.rerun()
 
             elif hapus_mode == "Hapus semua data":
-                st.error("🚨 Ini akan menghapus SELURUH rekap absensi!")
+                st.error("🚨 Akan menghapus SELURUH rekap absensi!")
                 konfirmasi = st.text_input("Ketik HAPUS SEMUA untuk konfirmasi:")
-                if st.button("🗑️ Hapus Semua Rekap", type="secondary", use_container_width=True):
+                if st.button("🗑️ Hapus Semua", type="secondary", use_container_width=True):
                     if konfirmasi.strip() == "HAPUS SEMUA":
-                        df_kosong = pd.DataFrame(columns=header)
-                        df_kosong.to_csv(REKAP_FILE, index=False)
-                        st.success("✅ Semua data rekap absensi berhasil dihapus.")
+                        pd.DataFrame(columns=header).to_csv(REKAP_FILE, index=False)
+                        st.success("✅ Semua rekap dihapus.")
                         st.rerun()
                     else:
-                        st.error("❌ Konfirmasi salah! Ketik HAPUS SEMUA dengan benar.")
+                        st.error("❌ Konfirmasi salah!")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MANAJEMEN USER (Admin only)
+# MANAJEMEN USER
 # ══════════════════════════════════════════════════════════════════════════════
 def halaman_user():
     st.markdown("""
@@ -801,9 +767,8 @@ def halaman_user():
     import pandas as pd
 
     st.markdown(f"#### Daftar User ({len(users)} akun)")
-    data_user = [{"Username": k, "Nama": v["nama"], "Role": v["role"].upper()}
-                 for k, v in users.items()]
-    st.dataframe(pd.DataFrame(data_user), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame([{"Username": k, "Nama": v["nama"], "Role": v["role"].upper()} for k, v in users.items()]),
+                 use_container_width=True, hide_index=True)
 
     st.divider()
     st.markdown("#### ➕ Tambah / Ubah User")
@@ -819,11 +784,7 @@ def halaman_user():
         if not new_user.strip() or not new_pass.strip() or not new_nama.strip():
             st.error("Semua field wajib diisi!")
         else:
-            users[new_user.strip()] = {
-                "password": hash_password(new_pass),
-                "role": new_role,
-                "nama": new_nama.strip()
-            }
+            users[new_user.strip()] = {"password": hash_password(new_pass), "role": new_role, "nama": new_nama.strip()}
             with open(USERS_FILE, "wb") as f:
                 pickle.dump(users, f)
             st.success(f"✅ User **{new_user}** berhasil disimpan.")
@@ -840,13 +801,10 @@ else:
     h = st.session_state.halaman
 
     if role == "mahasiswa":
-        # Mahasiswa hanya bisa akses absensi
         halaman_absensi()
     elif role == "dosen":
-        # Dosen hanya bisa akses rekap
         halaman_rekap()
     else:
-        # Admin bisa semua
         if   h == "dashboard": halaman_dashboard()
         elif h == "absensi":   halaman_absensi()
         elif h == "daftar":    halaman_daftar()
