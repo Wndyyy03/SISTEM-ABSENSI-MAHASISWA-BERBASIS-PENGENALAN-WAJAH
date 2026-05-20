@@ -676,7 +676,7 @@ def halaman_rekap():
 
         elif hapus_mode == "Hapus semua data":
             st.error("🚨 Ini akan menghapus SELURUH rekap absensi!")
-            konfirmasi = st.text_input("Ketik **HAPUS SEMUA** untuk konfirmasi:")
+            konfirmasi = st.text_input("Ketik HAPUS SEMUA untuk konfirmasi:")
             if st.button("🗑️ Hapus Semua Rekap", type="secondary", use_container_width=True):
                 if konfirmasi == "HAPUS SEMUA":
                     with open(REKAP_FILE, "w", newline="") as f:
