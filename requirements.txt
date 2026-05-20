@@ -1,5 +1,6 @@
-streamlit>=1.32.0
-opencv-python-headless>=4.8.0
-numpy>=1.24.0
-Pillow>=10.0.0
-pandas>=2.0.0
+streamlit
+opencv-python-headless
+numpy
+Pillow
+face_recognition
+dlib
