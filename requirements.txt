@@ -3,4 +3,5 @@ opencv-python-headless
 numpy
 Pillow
 deepface
-tf-keras
+tensorflow-cpu
+ 
