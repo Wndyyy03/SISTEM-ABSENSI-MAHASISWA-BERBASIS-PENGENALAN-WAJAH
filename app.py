@@ -47,9 +47,33 @@ def simpan_lbph_labels(labels):
     with open(LBPH_LABEL_FILE, 'w') as f:
         json.dump(labels, f, ensure_ascii=False)
 
+def crop_wajah_dari_file(img_path):
+    """Baca foto, deteksi & crop wajah, return grayscale 150x150."""
+    img_bgr = cv2.imread(img_path)
+    if img_bgr is None:
+        return None
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    # Coba deteksi wajah dulu
+    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    wajah = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(50, 50))
+    if len(wajah) > 0:
+        x, y, w, h = wajah[0]
+        # Tambah sedikit padding
+        pad = int(0.1 * min(w, h))
+        x1 = max(0, x - pad)
+        y1 = max(0, y - pad)
+        x2 = min(gray.shape[1], x + w + pad)
+        y2 = min(gray.shape[0], y + h + pad)
+        face = gray[y1:y2, x1:x2]
+    else:
+        # Tidak ada wajah terdeteksi, pakai seluruh gambar
+        face = gray
+    face = cv2.resize(face, (150, 150))
+    face = cv2.equalizeHist(face)
+    return face
+
 def latih_ulang_lbph():
-    """Latih ulang model LBPH dari database.pkl yang ada."""
-    import glob
+    """Latih ulang model LBPH dari semua foto yang tersimpan."""
     db = muat_database()
     if not db:
         return None
@@ -59,20 +83,14 @@ def latih_ulang_lbph():
     for nim, data in db.items():
         if not isinstance(data, dict):
             continue
-        foto_path = os.path.join(DATA_DIR, f"{nim}_*.jpg")
-        files = glob.glob(foto_path)
-        # Coba nama file lama
-        if not files:
-            for fname in os.listdir(DATA_DIR):
-                if fname.startswith(nim) and fname.endswith('.jpg'):
-                    files.append(os.path.join(DATA_DIR, fname))
-        for fpath in files:
-            img = cv2.imread(fpath, cv2.IMREAD_GRAYSCALE)
-            if img is not None:
-                img = cv2.resize(img, (150, 150))
-                img = cv2.equalizeHist(img)
-                faces.append(img)
-                ids.append(id_map[nim])
+        # Cari semua file foto milik NIM ini
+        for fname in os.listdir(DATA_DIR):
+            if fname.startswith(nim) and fname.endswith('.jpg') and 'temp' not in fname:
+                fpath = os.path.join(DATA_DIR, fname)
+                face = crop_wajah_dari_file(fpath)
+                if face is not None:
+                    faces.append(face)
+                    ids.append(id_map[nim])
     if not faces:
         return None
     recognizer = cv2.face.LBPHFaceRecognizer_create(radius=1, neighbors=8, grid_x=8, grid_y=8)
@@ -203,7 +221,7 @@ def ambil_fitur_wajah_fallback(gray_roi):
     return lbph
 
 def cocokkan_wajah_lbph(gray_roi, database):
-    """Kenali wajah dengan LBPH OpenCV - ringan & akurat."""
+    """Kenali wajah dengan LBPH OpenCV."""
     recognizer = muat_lbph_model()
     labels = muat_lbph_labels()
     if recognizer is None or not labels or not database:
@@ -212,15 +230,16 @@ def cocokkan_wajah_lbph(gray_roi, database):
         face = cv2.resize(gray_roi, (150, 150))
         face = cv2.equalizeHist(face)
         label_id, confidence = recognizer.predict(face)
-        # confidence LBPH: makin kecil makin cocok (0=sempurna, >80=tidak cocok)
-        threshold = 70
-        skor = max(0.0, 1.0 - confidence / 150.0)
+        # confidence LBPH: 0=sempurna, makin besar makin tidak cocok
+        # Threshold 80 = cukup toleran tapi tidak mudah ditipu
+        threshold = 80
+        skor = max(0.0, 1.0 - confidence / 200.0)
         if confidence <= threshold:
             nim = labels.get(str(label_id))
             if nim and nim in database:
                 nama = database[nim].get("nama", nim) if isinstance(database[nim], dict) else str(database[nim])
                 return nim, nama, skor
-    except Exception:
+    except Exception as e:
         pass
     return None, None, 0.0
 
@@ -510,7 +529,13 @@ def halaman_absensi():
 
             else:
                 (x, y, fw, fh) = wajah_list[0]
-                roi = gray[y:y+fh, x:x+fw]
+                # Crop wajah dengan padding untuk hasil lebih baik
+                pad = int(0.1 * min(fw, fh))
+                x1 = max(0, x - pad)
+                y1 = max(0, y - pad)
+                x2 = min(gray.shape[1], x + fw + pad)
+                y2 = min(gray.shape[0], y + fh + pad)
+                roi = gray[y1:y2, x1:x2]
 
                 # Gunakan LBPH OpenCV langsung
                 nim, nama, skor = cocokkan_wajah_lbph(roi, db)
@@ -608,12 +633,20 @@ def halaman_daftar():
                     elif len(wajah_list) > 1:
                         st.error("Lebih dari 1 wajah. Gunakan foto 1 orang saja.")
                     else:
+                        (x, y, fw, fh) = wajah_list[0]
+                        # Crop wajah dengan padding lalu simpan
+                        pad = int(0.1 * min(fw, fh))
+                        x1 = max(0, x - pad)
+                        y1 = max(0, y - pad)
+                        x2 = min(frame.shape[1], x + fw + pad)
+                        y2 = min(frame.shape[0], y + fh + pad)
+                        wajah_crop = frame[y1:y2, x1:x2]
+
                         nama_file = f"{nim}_{nama.replace(' ','_')}.jpg"
                         img_path  = os.path.join(DATA_DIR, nama_file)
-                        cv2.imwrite(img_path, frame)
+                        cv2.imwrite(img_path, wajah_crop)  # simpan crop wajah saja
 
                         # Simpan ke database
-                        (x,y,fw,fh) = wajah_list[0]
                         db = muat_database()
                         db[nim] = {"nama": nama.strip(), "nim": nim.strip(), "encoding": None}
                         simpan_database(db)
@@ -623,10 +656,10 @@ def halaman_daftar():
                             model = latih_ulang_lbph()
 
                         if model:
-                            st.success(f"✅ **{nama}** ({nim}) berhasil didaftarkan dengan LBPH! Total: {len(db)} mahasiswa.")
+                            st.success(f"✅ **{nama}** ({nim}) berhasil didaftarkan! Total: {len(db)} mahasiswa.")
                             st.balloons()
                         else:
-                            st.warning("Mahasiswa tersimpan tapi model belum bisa dilatih. Tambah minimal 1 foto lagi.")
+                            st.warning("Mahasiswa tersimpan tapi model belum bisa dilatih. Coba daftar ulang.")
 
     with tab2:
         db = muat_database()
