@@ -547,15 +547,17 @@ def halaman_rekap():
         return
 
     import pandas as pd
-    with open(REKAP_FILE, "r") as f:
-        rows = list(csv.reader(f))
+    try:
+        df = pd.read_csv(REKAP_FILE, dtype=str).fillna("")
+    except Exception:
+        st.error("File rekap absensi rusak atau tidak bisa dibaca.")
+        return
 
-    if len(rows) <= 1:
+    if df.empty:
         st.info("Data absensi masih kosong.")
         return
 
-    header = rows[0]
-    df = pd.DataFrame(rows[1:], columns=header)
+    header = list(df.columns)
 
     tab1, tab2, tab3, tab4 = st.tabs(["📋 Semua Data", "📅 Filter", "📥 Export", "🗑️ Hapus Data"])
 
@@ -631,10 +633,7 @@ def halaman_rekap():
             )
             if st.button("🗑️ Hapus Baris Ini", type="secondary", use_container_width=True):
                 df_baru = df.drop(index=pilihan_baris).reset_index(drop=True)
-                with open(REKAP_FILE, "w", newline="") as f:
-                    writer = csv.writer(f)
-                    writer.writerow(header)
-                    writer.writerows(df_baru.values.tolist())
+                df_baru.to_csv(REKAP_FILE, index=False)
                 st.success(f"✅ Data baris No.{pilihan_baris+1} berhasil dihapus.")
                 st.rerun()
 
@@ -648,10 +647,7 @@ def halaman_rekap():
                 st.info(f"📌 {jumlah} data absensi pada tanggal **{tgl_hapus}** akan dihapus.")
                 if st.button(f"🗑️ Hapus Semua Data Tanggal {tgl_hapus}", type="secondary", use_container_width=True):
                     df_baru = df[df["Tanggal"] != tgl_hapus].reset_index(drop=True)
-                    with open(REKAP_FILE, "w", newline="") as f:
-                        writer = csv.writer(f)
-                        writer.writerow(header)
-                        writer.writerows(df_baru.values.tolist())
+                    df_baru.to_csv(REKAP_FILE, index=False)
                     st.success(f"✅ {jumlah} data tanggal {tgl_hapus} berhasil dihapus.")
                     st.rerun()
 
@@ -667,10 +663,7 @@ def halaman_rekap():
                 st.info(f"📌 {jumlah} data absensi milik **{mhs_hapus}** akan dihapus.")
                 if st.button(f"🗑️ Hapus Semua Data {mhs_hapus}", type="secondary", use_container_width=True):
                     df_baru = df[df["NIM"] != nim_hapus].reset_index(drop=True)
-                    with open(REKAP_FILE, "w", newline="") as f:
-                        writer = csv.writer(f)
-                        writer.writerow(header)
-                        writer.writerows(df_baru.values.tolist())
+                    df_baru.to_csv(REKAP_FILE, index=False)
                     st.success(f"✅ {jumlah} data absensi {mhs_hapus} berhasil dihapus.")
                     st.rerun()
 
@@ -679,9 +672,8 @@ def halaman_rekap():
             konfirmasi = st.text_input("Ketik HAPUS SEMUA untuk konfirmasi:")
             if st.button("🗑️ Hapus Semua Rekap", type="secondary", use_container_width=True):
                 if konfirmasi.strip() == "HAPUS SEMUA":
-                    with open(REKAP_FILE, "w", newline="") as f:
-                        writer = csv.writer(f)
-                        writer.writerow(header)
+                    df_kosong = pd.DataFrame(columns=header)
+                    df_kosong.to_csv(REKAP_FILE, index=False)
                     st.success("✅ Semua data rekap absensi berhasil dihapus.")
                     st.rerun()
                 else:
