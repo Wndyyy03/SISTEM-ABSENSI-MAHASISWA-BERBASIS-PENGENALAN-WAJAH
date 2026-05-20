@@ -1,0 +1,115 @@
+# ══════════════════════════════════════════════════════
+#   PANDUAN LENGKAP - SISTEM ABSENSI PENGENALAN WAJAH
+#   Windi (105841115924) - Unismuh Makassar
+# ══════════════════════════════════════════════════════
+
+## STRUKTUR FILE:
+    absensi_wajah/
+    ├── requirements.txt       ← daftar library
+    ├── 1_daftar_wajah.py     ← daftarkan wajah mahasiswa
+    ├── 2_absensi.py          ← jalankan sistem absensi
+    ├── 3_rekap.py            ← lihat laporan kehadiran
+    ├── PANDUAN.txt           ← file ini
+    ├── database_wajah.pkl    ← otomatis dibuat setelah daftar
+    ├── rekap_absensi.csv     ← otomatis dibuat setelah absensi
+    └── data_wajah/           ← folder foto mahasiswa (otomatis)
+
+
+## LANGKAH INSTALL (Lakukan Sekali Saja):
+
+  1. Pastikan Python sudah terinstall.
+     Cek dengan: python --version
+     (Harus Python 3.8 - 3.11)
+
+  2. Buka terminal / command prompt
+     Masuk ke folder ini:
+     cd absensi_wajah
+
+  3. Install semua library:
+     pip install -r requirements.txt
+
+     ⚠️ Proses install bisa 5-15 menit
+        tergantung kecepatan internet.
+        Paket face-recognition perlu
+        mengcompile dlib, bersabar ya!
+
+  4. Khusus Windows, jika error saat install face-recognition:
+     - Install dulu: pip install cmake
+     - Lalu: pip install dlib
+     - Baru: pip install face-recognition
+
+
+## CARA MENJALANKAN:
+
+  STEP 1 - Daftarkan wajah dulu:
+  ┌─────────────────────────────────────────┐
+  │  python 1_daftar_wajah.py              │
+  │                                         │
+  │  → Pilih menu 1                         │
+  │  → Masukkan nama dan NIM                │
+  │  → Hadapkan wajah ke kamera             │
+  │  → Tekan SPASI untuk foto               │
+  │  → Ulangi untuk setiap mahasiswa        │
+  └─────────────────────────────────────────┘
+
+  STEP 2 - Jalankan absensi:
+  ┌─────────────────────────────────────────┐
+  │  python 2_absensi.py                   │
+  │                                         │
+  │  → Kamera otomatis terbuka              │
+  │  → Mahasiswa hadapkan wajah             │
+  │  → Kedipkan mata 2x (anti-spoofing)     │
+  │  → Absensi tercatat otomatis            │
+  └─────────────────────────────────────────┘
+
+  STEP 3 - Lihat rekap:
+  ┌─────────────────────────────────────────┐
+  │  python 3_rekap.py                     │
+  │                                         │
+  │  → Pilih menu 1 untuk semua data        │
+  │  → Pilih menu 2 untuk filter tanggal    │
+  └─────────────────────────────────────────┘
+
+
+## TIPS AGAR AKURAT:
+
+  ✅ Pastikan ruangan cukup cahaya
+  ✅ Saat daftar wajah, foto dari berbagai sudut
+     (bisa daftar beberapa kali untuk wajah yang sama)
+  ✅ Jarak wajah ke kamera: 40-80 cm
+  ✅ Lepas masker saat absensi
+
+
+## KETERANGAN ANTI-SPOOFING:
+
+  Sistem mendeteksi kedipan mata menggunakan
+  Eye Aspect Ratio (EAR) dari MediaPipe.
+  
+  - EAR > 0.22 = mata terbuka
+  - EAR < 0.22 = mata tertutup (kedipan)
+  
+  Mahasiswa harus kedipkan mata 2x agar
+  absensi diterima. Foto/video tidak bisa
+  melakukan kedipan mata natural, sehingga
+  kecurangan titip absen bisa dicegah.
+
+
+## ERROR UMUM & SOLUSI:
+
+  ❌ "No module named face_recognition"
+  ✅ Jalankan: pip install face-recognition
+
+  ❌ "Camera not found"
+  ✅ Pastikan webcam terhubung & tidak dipakai
+     aplikasi lain (tutup Zoom, Teams, dll)
+
+  ❌ Error saat install dlib di Windows
+  ✅ Install Visual Studio Build Tools dulu dari:
+     https://visualstudio.microsoft.com/downloads/
+     Pilih "Build Tools for Visual Studio"
+
+  ❌ Wajah tidak terdeteksi
+  ✅ Tambah cahaya ruangan, atau nyalakan lampu
+     di belakang laptop/kamera
+
+══════════════════════════════════════════════════════
