@@ -2,5 +2,5 @@ streamlit
 opencv-python-headless
 numpy
 Pillow
-face_recognition
-dlib
+deepface
+tf-keras
