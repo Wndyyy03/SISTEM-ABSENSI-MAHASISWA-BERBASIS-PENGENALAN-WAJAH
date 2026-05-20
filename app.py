@@ -221,7 +221,7 @@ def ambil_fitur_wajah_fallback(gray_roi):
     return lbph
 
 def cocokkan_wajah_lbph(gray_roi, database):
-    """Kenali wajah dengan LBPH OpenCV."""
+    """Kenali wajah dengan LBPH OpenCV - verifikasi ketat."""
     recognizer = muat_lbph_model()
     labels = muat_lbph_labels()
     if recognizer is None or not labels or not database:
@@ -230,15 +230,55 @@ def cocokkan_wajah_lbph(gray_roi, database):
         face = cv2.resize(gray_roi, (150, 150))
         face = cv2.equalizeHist(face)
         label_id, confidence = recognizer.predict(face)
-        # confidence LBPH: 0=sempurna, makin besar makin tidak cocok
-        # Threshold 80 = cukup toleran tapi tidak mudah ditipu
-        threshold = 80
+
+        # Threshold ketat: hanya lolos jika confidence <= 55
+        # LBPH: 0=sempurna cocok, >55=tidak cukup mirip → tolak
+        THRESHOLD = 55
+
         skor = max(0.0, 1.0 - confidence / 200.0)
-        if confidence <= threshold:
-            nim = labels.get(str(label_id))
-            if nim and nim in database:
-                nama = database[nim].get("nama", nim) if isinstance(database[nim], dict) else str(database[nim])
-                return nim, nama, skor
+
+        if confidence > THRESHOLD:
+            # Wajah tidak cukup mirip → tolak
+            return None, None, skor
+
+        nim = labels.get(str(label_id))
+        if not nim or nim not in database:
+            return None, None, 0.0
+
+        # Verifikasi kedua: bandingkan langsung dengan semua foto tersimpan NIM ini
+        # Ini mencegah false positive saat hanya ada 1 orang di database
+        best_conf = confidence
+        matched = True
+
+        foto_nim = []
+        for fname in os.listdir(DATA_DIR):
+            if fname.startswith(nim) and fname.endswith('.jpg') and 'temp' not in fname:
+                foto_nim.append(os.path.join(DATA_DIR, fname))
+
+        if len(foto_nim) >= 1:
+            # Hitung confidence rata-rata ke semua foto referensi
+            confs = []
+            for fpath in foto_nim:
+                ref = crop_wajah_dari_file(fpath)
+                if ref is not None:
+                    # Buat recognizer sementara dengan 1 foto untuk bandingkan
+                    try:
+                        temp_rec = cv2.face.LBPHFaceRecognizer_create()
+                        temp_rec.train([ref], np.array([0]))
+                        _, c = temp_rec.predict(face)
+                        confs.append(c)
+                    except Exception:
+                        pass
+            if confs:
+                avg_conf = sum(confs) / len(confs)
+                # Jika rata-rata confidence ke foto asli > 70, tolak
+                if avg_conf > 70:
+                    return None, None, 0.0
+                skor = max(0.0, 1.0 - avg_conf / 200.0)
+
+        nama = database[nim].get("nama", nim) if isinstance(database[nim], dict) else str(database[nim])
+        return nim, nama, skor
+
     except Exception as e:
         pass
     return None, None, 0.0
@@ -562,8 +602,9 @@ def halaman_absensi():
                     st.image(Image.fromarray(cv2.cvtColor(tampilan, cv2.COLOR_BGR2RGB)), use_column_width=True)
                     st.markdown(f"""
                     <div class='gagal-box'>
-                        ❌ Wajah tidak dikenali<br>
-                        <span style='font-size:13px'>Skor: {skor*100:.1f}% — pastikan pencahayaan cukup dan wajah menghadap kamera.</span>
+                        ❌ Wajah tidak dikenali / tidak terdaftar<br>
+                        <span style='font-size:13px'>Wajah tidak cocok dengan siapapun di database.<br>
+                        Pastikan: pencahayaan cukup, wajah menghadap kamera, dan mahasiswa sudah terdaftar.</span>
                     </div>
                     """, unsafe_allow_html=True)
         else:
