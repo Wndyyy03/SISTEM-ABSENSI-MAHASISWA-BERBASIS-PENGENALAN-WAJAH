@@ -117,6 +117,8 @@ def ambil_fitur_wajah(gray_roi):
 def cocokkan_wajah(encoding_baru, database, threshold=0.35):
     best_nim, best_nama, best_skor = None, None, -1
     for nim, data in database.items():
+        if not isinstance(data, dict) or "encoding" not in data:
+            continue
         enc_db = data["encoding"]
         a = encoding_baru / (np.linalg.norm(encoding_baru) + 1e-6)
         b = enc_db / (np.linalg.norm(enc_db) + 1e-6)
@@ -124,7 +126,7 @@ def cocokkan_wajah(encoding_baru, database, threshold=0.35):
         if skor > best_skor:
             best_skor = skor
             best_nim  = nim
-            best_nama = data["nama"]
+            best_nama = data.get("nama", nim)
     if best_skor >= threshold:
         return best_nim, best_nama, best_skor
     return None, None, best_skor
@@ -306,7 +308,7 @@ def halaman_dashboard():
         st.markdown("#### 👤 Mahasiswa Terdaftar")
         if db:
             import pandas as pd
-            data_mhs = [{"NIM": v["nim"], "Nama": v["nama"]} for v in db.values()]
+            data_mhs = [{"NIM": v.get("nim", k), "Nama": v.get("nama", "-")} if isinstance(v, dict) else {"NIM": k, "Nama": str(v)} for k, v in db.items()]
             st.dataframe(pd.DataFrame(data_mhs), use_container_width=True, hide_index=True)
         else:
             st.info("Belum ada mahasiswa terdaftar.")
