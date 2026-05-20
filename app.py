@@ -14,6 +14,13 @@ from datetime import datetime
 from PIL import Image
 import io
 
+# Gunakan face_recognition untuk akurasi tinggi (deep learning 128-dimensi)
+try:
+    import face_recognition
+    FACE_REC_AVAILABLE = True
+except ImportError:
+    FACE_REC_AVAILABLE = False
+
 # ── Konfigurasi Halaman ───────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Sistem Absensi - UNISMUH",
@@ -109,44 +116,63 @@ def simpan_database(db):
     with open(DB_FILE, "wb") as f:
         pickle.dump(db, f)
 
-def ambil_fitur_wajah(gray_roi):
+def ambil_fitur_wajah(gray_roi, frame_bgr=None, loc=None):
+    """
+    Ekstrak encoding wajah 128-dimensi menggunakan deep learning (face_recognition).
+    Fallback ke pixel flatten jika library tidak tersedia.
+    """
+    if FACE_REC_AVAILABLE and frame_bgr is not None and loc is not None:
+        try:
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            top, right, bottom, left = loc
+            encodings = face_recognition.face_encodings(frame_rgb, [(top, right, bottom, left)])
+            if encodings:
+                return encodings[0]
+        except Exception:
+            pass
+    # Fallback
     roi = cv2.resize(gray_roi, (128, 128))
     roi = cv2.equalizeHist(roi)
     return roi.flatten().astype(np.float64)
 
-def cocokkan_wajah(encoding_baru, database, threshold=0.75):
+def cocokkan_wajah(encoding_baru, database, threshold=0.45):
     """
-    Cocokkan wajah dengan database menggunakan cosine similarity.
-    Threshold dinaikkan ke 0.75 agar lebih ketat (minimal 75% mirip).
-    Juga menggunakan jarak euclidean sebagai validasi tambahan.
+    Cocokkan wajah menggunakan face_recognition (deep learning 128-dim).
+    Threshold 0.45 = sangat ketat (standar industri 0.6, kita lebih ketat).
+    Makin kecil jarak = makin mirip.
     """
-    best_nim, best_nama, best_skor = None, None, -1
-    best_jarak = float("inf")
+    best_nim, best_nama, best_jarak = None, None, float("inf")
 
-    a = encoding_baru / (np.linalg.norm(encoding_baru) + 1e-6)
+    is_deep = FACE_REC_AVAILABLE and len(encoding_baru) == 128
 
     for nim, data in database.items():
         if not isinstance(data, dict) or "encoding" not in data:
             continue
         enc_db = data["encoding"]
-        b = enc_db / (np.linalg.norm(enc_db) + 1e-6)
 
-        # Cosine similarity
-        skor = float(np.dot(a, b))
+        if is_deep and len(enc_db) == 128:
+            # face_recognition: gunakan euclidean distance (makin kecil = makin mirip)
+            jarak = float(np.linalg.norm(encoding_baru - enc_db))
+        else:
+            # Fallback cosine similarity → ubah ke "jarak" agar konsisten
+            a = encoding_baru / (np.linalg.norm(encoding_baru) + 1e-6)
+            b = enc_db / (np.linalg.norm(enc_db) + 1e-6)
+            jarak = 1.0 - float(np.dot(a, b))  # 0 = identik, 2 = berlawanan
 
-        # Euclidean distance (makin kecil makin mirip)
-        jarak = float(np.linalg.norm(a - b))
-
-        if skor > best_skor:
-            best_skor  = skor
+        if jarak < best_jarak:
             best_jarak = jarak
             best_nim   = nim
             best_nama  = data.get("nama", nim)
 
-    # Harus memenuhi KEDUA syarat: cosine tinggi DAN jarak kecil
-    if best_skor >= threshold and best_jarak <= 0.8:
-        return best_nim, best_nama, best_skor
-    return None, None, best_skor
+    # Skor untuk ditampilkan (persentase kemiripan)
+    if is_deep:
+        skor_tampil = max(0.0, 1.0 - best_jarak / 0.6)
+    else:
+        skor_tampil = max(0.0, 1.0 - best_jarak)
+
+    if best_jarak <= threshold:
+        return best_nim, best_nama, skor_tampil
+    return None, None, skor_tampil
 
 def catat_absensi(nim, nama, matkul, kelas):
     sekarang = datetime.now()
@@ -385,6 +411,11 @@ def halaman_absensi():
     </div>
     """, unsafe_allow_html=True)
 
+    if FACE_REC_AVAILABLE:
+        st.success("🤖 Menggunakan **Deep Learning** (face_recognition) — akurasi tinggi, sulit ditipu.")
+    else:
+        st.warning("⚠️ Library `face_recognition` tidak terinstall. Tambahkan ke `requirements.txt`: `face_recognition`. Saat ini menggunakan metode pixel (kurang akurat).")
+
     db = muat_database()
     if not db:
         st.warning("⚠️ Database wajah kosong! Daftarkan mahasiswa dulu di menu **Daftar Mahasiswa**.")
@@ -439,7 +470,9 @@ def halaman_absensi():
             else:
                 (x, y, fw, fh) = wajah_list[0]
                 roi = gray[y:y+fh, x:x+fw]
-                encoding = ambil_fitur_wajah(roi)
+                # Konversi koordinat OpenCV (x,y,w,h) ke face_recognition (top,right,bottom,left)
+                loc = (y, x+fw, y+fh, x)
+                encoding = ambil_fitur_wajah(roi, frame_bgr=frame, loc=loc)
                 nim, nama, skor = cocokkan_wajah(encoding, db)
 
                 if nim:
@@ -549,7 +582,8 @@ def halaman_daftar():
                     else:
                         (x,y,fw,fh) = wajah_list[0]
                         roi = gray[y:y+fh, x:x+fw]
-                        encoding = ambil_fitur_wajah(roi)
+                        loc = (y, x+fw, y+fh, x)
+                        encoding = ambil_fitur_wajah(roi, frame_bgr=frame, loc=loc)
 
                         nama_file = f"{nim}_{nama.replace(' ','_')}.jpg"
                         cv2.imwrite(os.path.join(DATA_DIR, nama_file), frame)
@@ -557,7 +591,8 @@ def halaman_daftar():
                         db = muat_database()
                         db[nim] = {"nama": nama.strip(), "nim": nim.strip(), "encoding": encoding}
                         simpan_database(db)
-                        st.success(f"✅ **{nama}** ({nim}) berhasil didaftarkan! Total: {len(db)} mahasiswa.")
+                        metode = "deep learning (face_recognition)" if FACE_REC_AVAILABLE and len(encoding) == 128 else "pixel comparison"
+                        st.success(f"✅ **{nama}** ({nim}) berhasil didaftarkan menggunakan {metode}! Total: {len(db)} mahasiswa.")
                         st.balloons()
 
     with tab2:
