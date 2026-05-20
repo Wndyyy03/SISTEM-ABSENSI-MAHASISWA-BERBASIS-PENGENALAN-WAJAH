@@ -185,26 +185,54 @@ def halaman_login():
         </div>
         """, unsafe_allow_html=True)
 
-        with st.form("form_login"):
-            username = st.text_input("Username", placeholder="admin / dosen")
-            password = st.text_input("Password", type="password", placeholder="••••••••")
-            submit   = st.form_submit_button("Masuk", use_container_width=True, type="primary")
+        tab_admin, tab_mhs = st.tabs(["👨‍💼 Admin / Dosen", "🎓 Mahasiswa"])
 
-        if submit:
-            user = cek_login(username, password)
-            if user:
-                st.session_state.logged_in = True
-                st.session_state.user_info = {**user, "username": username}
-                st.rerun()
-            else:
-                st.error("Username atau password salah!")
+        with tab_admin:
+            with st.form("form_login_admin"):
+                username = st.text_input("Username", placeholder="admin / dosen")
+                password = st.text_input("Password", type="password", placeholder="••••••••")
+                submit   = st.form_submit_button("Masuk", use_container_width=True, type="primary")
+            if submit:
+                user = cek_login(username, password)
+                if user:
+                    st.session_state.logged_in = True
+                    st.session_state.user_info = {**user, "username": username}
+                    if user["role"] == "dosen":
+                        st.session_state.halaman = "rekap"
+                    else:
+                        st.session_state.halaman = "dashboard"
+                    st.rerun()
+                else:
+                    st.error("Username atau password salah!")
+
+        with tab_mhs:
+            with st.form("form_login_mhs"):
+                nim_input = st.text_input("NIM", placeholder="contoh: 105841100121")
+                submit_mhs = st.form_submit_button("Masuk", use_container_width=True, type="primary")
+            if submit_mhs:
+                db = muat_database()
+                if nim_input.strip() in db:
+                    data_mhs = db[nim_input.strip()]
+                    nama_mhs = data_mhs.get("nama", nim_input) if isinstance(data_mhs, dict) else nim_input
+                    st.session_state.logged_in = True
+                    st.session_state.user_info = {
+                        "username": nim_input.strip(),
+                        "nama": nama_mhs,
+                        "role": "mahasiswa",
+                        "nim": nim_input.strip()
+                    }
+                    st.session_state.halaman = "absensi"
+                    st.rerun()
+                else:
+                    st.error("NIM tidak ditemukan! Hubungi admin untuk mendaftar.")
 
         st.markdown("""
         <div style='background:#161b22; border:1px solid #30363d; border-radius:8px;
                     padding:12px; margin-top:16px; font-size:12px; color:#8b949e'>
             <b style='color:#ffd740'>Default login:</b><br>
             Admin &nbsp;→ admin / admin123<br>
-            Dosen &nbsp;→ dosen / dosen123
+            Dosen &nbsp;→ dosen / dosen123<br>
+            Mahasiswa → masuk dengan NIM yang sudah terdaftar
         </div>
         """, unsafe_allow_html=True)
 
@@ -214,24 +242,36 @@ def halaman_login():
 def sidebar_navigasi():
     with st.sidebar:
         user = st.session_state.user_info
+        role = user.get("role", "")
+
+        ikon_role = "🎓" if role == "mahasiswa" else "👨‍🏫" if role == "dosen" else "⚙️"
         st.markdown(f"""
         <div style='background:#161b22; border:1px solid #30363d; border-radius:10px;
                     padding:14px; margin-bottom:16px; text-align:center'>
-            <div style='font-size:32px'>👤</div>
+            <div style='font-size:32px'>{ikon_role}</div>
             <div style='color:#e6edf3; font-weight:bold'>{user['nama']}</div>
-            <div style='color:#8b949e; font-size:12px'>{user['role'].upper()}</div>
+            <div style='color:#8b949e; font-size:12px'>{role.upper()}</div>
         </div>
         """, unsafe_allow_html=True)
 
         st.markdown("**Menu Utama**")
-        menus = [
-            ("🏠", "Dashboard",         "dashboard"),
-            ("📸", "Absensi Wajah",     "absensi"),
-            ("👤", "Daftar Mahasiswa",  "daftar"),
-            ("📊", "Rekap Absensi",     "rekap"),
-        ]
-        if user["role"] == "admin":
-            menus.append(("⚙️", "Manajemen User", "user"))
+
+        if role == "mahasiswa":
+            menus = [
+                ("📸", "Absensi Wajah", "absensi"),
+            ]
+        elif role == "dosen":
+            menus = [
+                ("📊", "Rekap Absensi", "rekap"),
+            ]
+        else:  # admin
+            menus = [
+                ("🏠", "Dashboard",        "dashboard"),
+                ("📸", "Absensi Wajah",    "absensi"),
+                ("👤", "Daftar Mahasiswa", "daftar"),
+                ("📊", "Rekap Absensi",    "rekap"),
+                ("⚙️", "Manajemen User",   "user"),
+            ]
 
         for icon, label, key in menus:
             aktif = st.session_state.halaman == key
@@ -244,6 +284,7 @@ def sidebar_navigasi():
         if st.button("🚪 Keluar", use_container_width=True):
             st.session_state.logged_in = False
             st.session_state.user_info = None
+            st.session_state.halaman   = "dashboard"
             st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -545,6 +586,9 @@ def halaman_rekap():
     </div>
     """, unsafe_allow_html=True)
 
+    role = st.session_state.user_info.get("role", "admin")
+    is_dosen = role == "dosen"
+
     if not os.path.exists(REKAP_FILE):
         st.info("Belum ada data absensi.")
         return
@@ -562,7 +606,12 @@ def halaman_rekap():
 
     header = list(df.columns)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📋 Semua Data", "📅 Filter", "📥 Export", "🗑️ Hapus Data"])
+    if is_dosen:
+        tabs = st.tabs(["📋 Semua Data", "📅 Filter", "📥 Export"])
+        tab1, tab2, tab3 = tabs
+        tab4 = None
+    else:
+        tab1, tab2, tab3, tab4 = st.tabs(["📋 Semua Data", "📅 Filter", "📥 Export", "🗑️ Hapus Data"])
 
     with tab1:
         st.markdown(f"#### Semua Rekap Absensi ({len(df)} catatan)")
@@ -612,75 +661,76 @@ def halaman_rekap():
             type="primary"
         )
 
-    with tab4:
-        st.markdown("#### 🗑️ Hapus Data Rekap")
-        st.warning("⚠️ Data yang dihapus tidak dapat dikembalikan!")
+    if tab4 is not None:
+        with tab4:
+            st.markdown("#### 🗑️ Hapus Data Rekap")
+            st.warning("⚠️ Data yang dihapus tidak dapat dikembalikan!")
 
-        hapus_mode = st.radio("Pilih metode hapus:", [
-            "Hapus per baris (satu data)",
-            "Hapus berdasarkan tanggal",
-            "Hapus berdasarkan mahasiswa",
-            "Hapus semua data"
-        ])
+            hapus_mode = st.radio("Pilih metode hapus:", [
+                "Hapus per baris (satu data)",
+                "Hapus berdasarkan tanggal",
+                "Hapus berdasarkan mahasiswa",
+                "Hapus semua data"
+            ])
 
-        st.divider()
+            st.divider()
 
-        if hapus_mode == "Hapus per baris (satu data)":
-            df_tampil = df.copy()
-            df_tampil.insert(0, "No", range(1, len(df_tampil)+1))
-            st.dataframe(df_tampil, use_container_width=True, hide_index=True)
-            pilihan_baris = st.selectbox(
-                "Pilih baris yang akan dihapus:",
-                options=range(len(df)),
-                format_func=lambda i: f"No.{i+1} | {df.iloc[i].get('NIM','?')} - {df.iloc[i].get('Nama','?')} | {df.iloc[i].get('Tanggal','?')} | {df.iloc[i].get('Mata Kuliah','?')}"
-            )
-            if st.button("🗑️ Hapus Baris Ini", type="secondary", use_container_width=True):
-                df_baru = df.drop(index=pilihan_baris).reset_index(drop=True)
-                df_baru.to_csv(REKAP_FILE, index=False)
-                st.success(f"✅ Data baris No.{pilihan_baris+1} berhasil dihapus.")
-                st.rerun()
-
-        elif hapus_mode == "Hapus berdasarkan tanggal":
-            tanggal_list = sorted(df["Tanggal"].unique().tolist()) if "Tanggal" in df.columns else []
-            if not tanggal_list:
-                st.info("Tidak ada data tanggal.")
-            else:
-                tgl_hapus = st.selectbox("Pilih tanggal yang akan dihapus:", tanggal_list)
-                jumlah = len(df[df["Tanggal"] == tgl_hapus])
-                st.info(f"📌 {jumlah} data absensi pada tanggal **{tgl_hapus}** akan dihapus.")
-                if st.button(f"🗑️ Hapus Semua Data Tanggal {tgl_hapus}", type="secondary", use_container_width=True):
-                    df_baru = df[df["Tanggal"] != tgl_hapus].reset_index(drop=True)
+            if hapus_mode == "Hapus per baris (satu data)":
+                df_tampil = df.copy()
+                df_tampil.insert(0, "No", range(1, len(df_tampil)+1))
+                st.dataframe(df_tampil, use_container_width=True, hide_index=True)
+                pilihan_baris = st.selectbox(
+                    "Pilih baris yang akan dihapus:",
+                    options=range(len(df)),
+                    format_func=lambda i: f"No.{i+1} | {df.iloc[i].get('NIM','?')} - {df.iloc[i].get('Nama','?')} | {df.iloc[i].get('Tanggal','?')} | {df.iloc[i].get('Mata Kuliah','?')}"
+                )
+                if st.button("🗑️ Hapus Baris Ini", type="secondary", use_container_width=True):
+                    df_baru = df.drop(index=pilihan_baris).reset_index(drop=True)
                     df_baru.to_csv(REKAP_FILE, index=False)
-                    st.success(f"✅ {jumlah} data tanggal {tgl_hapus} berhasil dihapus.")
+                    st.success(f"✅ Data baris No.{pilihan_baris+1} berhasil dihapus.")
                     st.rerun()
 
-        elif hapus_mode == "Hapus berdasarkan mahasiswa":
-            if "NIM" not in df.columns:
-                st.info("Kolom NIM tidak ditemukan.")
-            else:
-                mhs_list = df.groupby(["NIM","Nama"]).size().reset_index()
-                pilihan_mhs = [f"{r['NIM']} - {r['Nama']}" for _, r in mhs_list.iterrows()]
-                mhs_hapus = st.selectbox("Pilih mahasiswa:", pilihan_mhs)
-                nim_hapus = mhs_hapus.split(" - ")[0].strip()
-                jumlah = len(df[df["NIM"] == nim_hapus])
-                st.info(f"📌 {jumlah} data absensi milik **{mhs_hapus}** akan dihapus.")
-                if st.button(f"🗑️ Hapus Semua Data {mhs_hapus}", type="secondary", use_container_width=True):
-                    df_baru = df[df["NIM"] != nim_hapus].reset_index(drop=True)
-                    df_baru.to_csv(REKAP_FILE, index=False)
-                    st.success(f"✅ {jumlah} data absensi {mhs_hapus} berhasil dihapus.")
-                    st.rerun()
-
-        elif hapus_mode == "Hapus semua data":
-            st.error("🚨 Ini akan menghapus SELURUH rekap absensi!")
-            konfirmasi = st.text_input("Ketik HAPUS SEMUA untuk konfirmasi:")
-            if st.button("🗑️ Hapus Semua Rekap", type="secondary", use_container_width=True):
-                if konfirmasi.strip() == "HAPUS SEMUA":
-                    df_kosong = pd.DataFrame(columns=header)
-                    df_kosong.to_csv(REKAP_FILE, index=False)
-                    st.success("✅ Semua data rekap absensi berhasil dihapus.")
-                    st.rerun()
+            elif hapus_mode == "Hapus berdasarkan tanggal":
+                tanggal_list = sorted(df["Tanggal"].unique().tolist()) if "Tanggal" in df.columns else []
+                if not tanggal_list:
+                    st.info("Tidak ada data tanggal.")
                 else:
-                    st.error("❌ Konfirmasi salah! Ketik HAPUS SEMUA dengan benar.")
+                    tgl_hapus = st.selectbox("Pilih tanggal yang akan dihapus:", tanggal_list)
+                    jumlah = len(df[df["Tanggal"] == tgl_hapus])
+                    st.info(f"📌 {jumlah} data absensi pada tanggal **{tgl_hapus}** akan dihapus.")
+                    if st.button(f"🗑️ Hapus Semua Data Tanggal {tgl_hapus}", type="secondary", use_container_width=True):
+                        df_baru = df[df["Tanggal"] != tgl_hapus].reset_index(drop=True)
+                        df_baru.to_csv(REKAP_FILE, index=False)
+                        st.success(f"✅ {jumlah} data tanggal {tgl_hapus} berhasil dihapus.")
+                        st.rerun()
+
+            elif hapus_mode == "Hapus berdasarkan mahasiswa":
+                if "NIM" not in df.columns:
+                    st.info("Kolom NIM tidak ditemukan.")
+                else:
+                    mhs_list = df.groupby(["NIM","Nama"]).size().reset_index()
+                    pilihan_mhs = [f"{r['NIM']} - {r['Nama']}" for _, r in mhs_list.iterrows()]
+                    mhs_hapus = st.selectbox("Pilih mahasiswa:", pilihan_mhs)
+                    nim_hapus = mhs_hapus.split(" - ")[0].strip()
+                    jumlah = len(df[df["NIM"] == nim_hapus])
+                    st.info(f"📌 {jumlah} data absensi milik **{mhs_hapus}** akan dihapus.")
+                    if st.button(f"🗑️ Hapus Semua Data {mhs_hapus}", type="secondary", use_container_width=True):
+                        df_baru = df[df["NIM"] != nim_hapus].reset_index(drop=True)
+                        df_baru.to_csv(REKAP_FILE, index=False)
+                        st.success(f"✅ {jumlah} data absensi {mhs_hapus} berhasil dihapus.")
+                        st.rerun()
+
+            elif hapus_mode == "Hapus semua data":
+                st.error("🚨 Ini akan menghapus SELURUH rekap absensi!")
+                konfirmasi = st.text_input("Ketik HAPUS SEMUA untuk konfirmasi:")
+                if st.button("🗑️ Hapus Semua Rekap", type="secondary", use_container_width=True):
+                    if konfirmasi.strip() == "HAPUS SEMUA":
+                        df_kosong = pd.DataFrame(columns=header)
+                        df_kosong.to_csv(REKAP_FILE, index=False)
+                        st.success("✅ Semua data rekap absensi berhasil dihapus.")
+                        st.rerun()
+                    else:
+                        st.error("❌ Konfirmasi salah! Ketik HAPUS SEMUA dengan benar.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MANAJEMEN USER (Admin only)
@@ -731,10 +781,20 @@ def halaman_user():
 if not st.session_state.logged_in:
     halaman_login()
 else:
+    role = st.session_state.user_info.get("role", "admin")
     sidebar_navigasi()
     h = st.session_state.halaman
-    if   h == "dashboard": halaman_dashboard()
-    elif h == "absensi":   halaman_absensi()
-    elif h == "daftar":    halaman_daftar()
-    elif h == "rekap":     halaman_rekap()
-    elif h == "user":      halaman_user()
+
+    if role == "mahasiswa":
+        # Mahasiswa hanya bisa akses absensi
+        halaman_absensi()
+    elif role == "dosen":
+        # Dosen hanya bisa akses rekap
+        halaman_rekap()
+    else:
+        # Admin bisa semua
+        if   h == "dashboard": halaman_dashboard()
+        elif h == "absensi":   halaman_absensi()
+        elif h == "daftar":    halaman_daftar()
+        elif h == "rekap":     halaman_rekap()
+        elif h == "user":      halaman_user()
