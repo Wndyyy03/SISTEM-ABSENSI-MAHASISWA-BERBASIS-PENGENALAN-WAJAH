@@ -430,7 +430,10 @@ def halaman_dashboard():
         st.markdown("#### 📋 Absensi Hari Ini")
         if df_rekap is not None and not df_rekap.empty and "Tanggal" in df_rekap.columns:
             df_hari = df_rekap[df_rekap["Tanggal"] == tanggal_hari_ini]
-            st.dataframe(df_hari, use_container_width=True, hide_index=True) if not df_hari.empty else st.info("Belum ada absensi hari ini.")
+            if not df_hari.empty:
+                st.dataframe(df_hari, use_container_width=True, hide_index=True)
+            else:
+                st.info("Belum ada absensi hari ini.")
         else:
             st.info("Belum ada data absensi.")
 
