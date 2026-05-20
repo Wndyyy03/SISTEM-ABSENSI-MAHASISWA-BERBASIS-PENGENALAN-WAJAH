@@ -500,14 +500,23 @@ def halaman_daftar():
         st.markdown(f"#### Daftar Mahasiswa Terdaftar ({len(db)} orang)")
         if db:
             import pandas as pd
-            data = [{"No": i+1, "NIM": v["nim"], "Nama": v["nama"]}
-                    for i, v in enumerate(db.values())]
+            data = []
+            for i, (nim_key, v) in enumerate(db.items()):
+                if isinstance(v, dict):
+                    data.append({"No": i+1, "NIM": v.get("nim", nim_key), "Nama": v.get("nama", "-")})
+                else:
+                    data.append({"No": i+1, "NIM": nim_key, "Nama": str(v)})
             st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
 
             st.divider()
             st.markdown("#### ❌ Hapus Mahasiswa")
-            nim_hapus = st.selectbox("Pilih mahasiswa yang akan dihapus",
-                                     options=[f"{v['nim']} - {v['nama']}" for v in db.values()])
+            pilihan_hapus = []
+            for nim_key, v in db.items():
+                if isinstance(v, dict):
+                    pilihan_hapus.append(f"{v.get('nim', nim_key)} - {v.get('nama', '-')}")
+                else:
+                    pilihan_hapus.append(nim_key)
+            nim_hapus = st.selectbox("Pilih mahasiswa yang akan dihapus", options=pilihan_hapus)
             if st.button("🗑️ Hapus dari Database", type="secondary"):
                 nim_key = nim_hapus.split(" - ")[0]
                 if nim_key in db:
