@@ -48,17 +48,37 @@ def simpan_lbph_labels(labels):
         json.dump(labels, f, ensure_ascii=False)
 
 def crop_wajah_dari_file(img_path):
-    """Baca foto, deteksi & crop wajah, return grayscale 150x150."""
+    """Baca foto, deteksi & crop wajah, return grayscale 150x150 (konsisten dengan absensi)."""
     img_bgr = cv2.imread(img_path)
     if img_bgr is None:
         return None
+
+    # Resize dulu agar konsisten (sama seperti saat absensi)
+    h, w = img_bgr.shape[:2]
+    MAX_DIM = 1280
+    if max(h, w) > MAX_DIM:
+        scale = MAX_DIM / max(h, w)
+        img_bgr = cv2.resize(img_bgr, (int(w * scale), int(h * scale)))
+
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    # Coba deteksi wajah dulu
+    gray = cv2.equalizeHist(gray)  # Sama persis dengan saat absensi
+
     cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    wajah = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(50, 50))
+
+    # Coba beberapa parameter
+    params_list = [
+        dict(scaleFactor=1.1, minNeighbors=4, minSize=(50, 50)),
+        dict(scaleFactor=1.05, minNeighbors=3, minSize=(40, 40)),
+        dict(scaleFactor=1.2, minNeighbors=3, minSize=(30, 30)),
+    ]
+    wajah = []
+    for params in params_list:
+        wajah = cascade.detectMultiScale(gray, **params)
+        if len(wajah) > 0:
+            break
+
     if len(wajah) > 0:
         x, y, w, h = wajah[0]
-        # Tambah sedikit padding
         pad = int(0.1 * min(w, h))
         x1 = max(0, x - pad)
         y1 = max(0, y - pad)
@@ -66,10 +86,10 @@ def crop_wajah_dari_file(img_path):
         y2 = min(gray.shape[0], y + h + pad)
         face = gray[y1:y2, x1:x2]
     else:
-        # Tidak ada wajah terdeteksi, pakai seluruh gambar
-        face = gray
+        face = gray  # Fallback pakai seluruh gambar
+
     face = cv2.resize(face, (150, 150))
-    face = cv2.equalizeHist(face)
+    # Tidak perlu equalizeHist lagi karena sudah dilakukan di atas
     return face
 
 def latih_ulang_lbph():
@@ -233,12 +253,12 @@ def cocokkan_wajah_lbph(gray_roi, database):
 
         # Threshold ketat: hanya lolos jika confidence <= 55
         # LBPH: 0=sempurna cocok, >55=tidak cukup mirip → tolak
-        THRESHOLD = 55
+        # Threshold 65: cukup ketat tapi toleran perbedaan kamera HP vs foto daftar
+        THRESHOLD = 65
 
         skor = max(0.0, 1.0 - confidence / 200.0)
 
         if confidence > THRESHOLD:
-            # Wajah tidak cukup mirip → tolak
             return None, None, skor
 
         nim = labels.get(str(label_id))
@@ -272,7 +292,7 @@ def cocokkan_wajah_lbph(gray_roi, database):
             if confs:
                 avg_conf = sum(confs) / len(confs)
                 # Jika rata-rata confidence ke foto asli > 70, tolak
-                if avg_conf > 70:
+                if avg_conf > 90:
                     return None, None, 0.0
                 skor = max(0.0, 1.0 - avg_conf / 200.0)
 
@@ -306,13 +326,35 @@ def catat_absensi(nim, nama, matkul, kelas):
     return True, waktu
 
 def deteksi_wajah_dari_gambar(image_bytes):
+    """Deteksi wajah yang robust untuk kamera HP (resolusi tinggi, berbagai kondisi)."""
     nparr = np.frombuffer(image_bytes, np.uint8)
     frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if frame is None:
         return None, None, None
-    gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    wajah = CASCADE.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=5, minSize=(60, 60))
-    return frame, gray, wajah
+
+    # Resize jika resolusi terlalu besar (kamera HP bisa 4000x3000+)
+    h, w = frame.shape[:2]
+    MAX_DIM = 1280
+    if max(h, w) > MAX_DIM:
+        scale = MAX_DIM / max(h, w)
+        frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    # Perbaiki kontras untuk kondisi cahaya kurang/HP
+    gray_eq = cv2.equalizeHist(gray)
+
+    # Coba beberapa parameter dari longgar ke ketat agar deteksi di HP berhasil
+    params_list = [
+        dict(scaleFactor=1.1, minNeighbors=4, minSize=(50, 50)),
+        dict(scaleFactor=1.05, minNeighbors=3, minSize=(40, 40)),
+        dict(scaleFactor=1.2, minNeighbors=3, minSize=(30, 30)),
+    ]
+    for params in params_list:
+        wajah = CASCADE.detectMultiScale(gray_eq, **params)
+        if len(wajah) > 0:
+            return frame, gray_eq, wajah
+
+    return frame, gray_eq, []
 
 def simpan_gambar_sementara(image_bytes, nim):
     path  = os.path.join(DATA_DIR, f"temp_{nim}.jpg")
