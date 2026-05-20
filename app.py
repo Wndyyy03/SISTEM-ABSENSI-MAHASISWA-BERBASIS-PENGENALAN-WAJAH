@@ -557,7 +557,7 @@ def halaman_rekap():
     header = rows[0]
     df = pd.DataFrame(rows[1:], columns=header)
 
-    tab1, tab2, tab3 = st.tabs(["📋 Semua Data", "📅 Filter", "📥 Export"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📋 Semua Data", "📅 Filter", "📥 Export", "🗑️ Hapus Data"])
 
     with tab1:
         st.markdown(f"#### Semua Rekap Absensi ({len(df)} catatan)")
@@ -606,6 +606,86 @@ def halaman_rekap():
             use_container_width=True,
             type="primary"
         )
+
+    with tab4:
+        st.markdown("#### 🗑️ Hapus Data Rekap")
+        st.warning("⚠️ Data yang dihapus tidak dapat dikembalikan!")
+
+        hapus_mode = st.radio("Pilih metode hapus:", [
+            "Hapus per baris (satu data)",
+            "Hapus berdasarkan tanggal",
+            "Hapus berdasarkan mahasiswa",
+            "Hapus semua data"
+        ])
+
+        st.divider()
+
+        if hapus_mode == "Hapus per baris (satu data)":
+            df_tampil = df.copy()
+            df_tampil.insert(0, "No", range(1, len(df_tampil)+1))
+            st.dataframe(df_tampil, use_container_width=True, hide_index=True)
+            pilihan_baris = st.selectbox(
+                "Pilih baris yang akan dihapus:",
+                options=range(len(df)),
+                format_func=lambda i: f"No.{i+1} | {df.iloc[i].get('NIM','?')} - {df.iloc[i].get('Nama','?')} | {df.iloc[i].get('Tanggal','?')} | {df.iloc[i].get('Mata Kuliah','?')}"
+            )
+            if st.button("🗑️ Hapus Baris Ini", type="secondary", use_container_width=True):
+                df_baru = df.drop(index=pilihan_baris).reset_index(drop=True)
+                with open(REKAP_FILE, "w", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(header)
+                    writer.writerows(df_baru.values.tolist())
+                st.success(f"✅ Data baris No.{pilihan_baris+1} berhasil dihapus.")
+                st.rerun()
+
+        elif hapus_mode == "Hapus berdasarkan tanggal":
+            tanggal_list = sorted(df["Tanggal"].unique().tolist()) if "Tanggal" in df.columns else []
+            if not tanggal_list:
+                st.info("Tidak ada data tanggal.")
+            else:
+                tgl_hapus = st.selectbox("Pilih tanggal yang akan dihapus:", tanggal_list)
+                jumlah = len(df[df["Tanggal"] == tgl_hapus])
+                st.info(f"📌 {jumlah} data absensi pada tanggal **{tgl_hapus}** akan dihapus.")
+                if st.button(f"🗑️ Hapus Semua Data Tanggal {tgl_hapus}", type="secondary", use_container_width=True):
+                    df_baru = df[df["Tanggal"] != tgl_hapus].reset_index(drop=True)
+                    with open(REKAP_FILE, "w", newline="") as f:
+                        writer = csv.writer(f)
+                        writer.writerow(header)
+                        writer.writerows(df_baru.values.tolist())
+                    st.success(f"✅ {jumlah} data tanggal {tgl_hapus} berhasil dihapus.")
+                    st.rerun()
+
+        elif hapus_mode == "Hapus berdasarkan mahasiswa":
+            if "NIM" not in df.columns:
+                st.info("Kolom NIM tidak ditemukan.")
+            else:
+                mhs_list = df.groupby(["NIM","Nama"]).size().reset_index()
+                pilihan_mhs = [f"{r['NIM']} - {r['Nama']}" for _, r in mhs_list.iterrows()]
+                mhs_hapus = st.selectbox("Pilih mahasiswa:", pilihan_mhs)
+                nim_hapus = mhs_hapus.split(" - ")[0].strip()
+                jumlah = len(df[df["NIM"] == nim_hapus])
+                st.info(f"📌 {jumlah} data absensi milik **{mhs_hapus}** akan dihapus.")
+                if st.button(f"🗑️ Hapus Semua Data {mhs_hapus}", type="secondary", use_container_width=True):
+                    df_baru = df[df["NIM"] != nim_hapus].reset_index(drop=True)
+                    with open(REKAP_FILE, "w", newline="") as f:
+                        writer = csv.writer(f)
+                        writer.writerow(header)
+                        writer.writerows(df_baru.values.tolist())
+                    st.success(f"✅ {jumlah} data absensi {mhs_hapus} berhasil dihapus.")
+                    st.rerun()
+
+        elif hapus_mode == "Hapus semua data":
+            st.error("🚨 Ini akan menghapus SELURUH rekap absensi!")
+            konfirmasi = st.text_input("Ketik **HAPUS SEMUA** untuk konfirmasi:")
+            if st.button("🗑️ Hapus Semua Rekap", type="secondary", use_container_width=True):
+                if konfirmasi == "HAPUS SEMUA":
+                    with open(REKAP_FILE, "w", newline="") as f:
+                        writer = csv.writer(f)
+                        writer.writerow(header)
+                    st.success("✅ Semua data rekap absensi berhasil dihapus.")
+                    st.rerun()
+                else:
+                    st.error("❌ Konfirmasi salah! Ketik HAPUS SEMUA dengan benar.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MANAJEMEN USER (Admin only)
