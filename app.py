@@ -391,12 +391,24 @@ def halaman_dashboard():
     with col_b:
         st.markdown("#### 👤 Mahasiswa Terdaftar")
         if db:
-            data_mhs = [
-                {"NIM": v.get("nim", k), "Nama": v.get("nama", "-")} if isinstance(v, dict)
-                else {"NIM": k, "Nama": str(v)}
-                for k, v in db.items()
-            ]
-            st.dataframe(pd.DataFrame(data_mhs), use_container_width=True, hide_index=True)
+            data_mhs = []
+            for k, v in db.items():
+                if isinstance(v, dict):
+                    nim_val  = v.get("nim", k)
+                    nama_val = v.get("nama", "-")
+                    # Skip jika nim/nama berupa list atau bukan string
+                    if isinstance(nim_val, list) or isinstance(nama_val, list):
+                        continue
+                    data_mhs.append({"No": len(data_mhs)+1, "NIM": str(nim_val), "Nama": str(nama_val)})
+            if data_mhs:
+                st.dataframe(pd.DataFrame(data_mhs), use_container_width=True, hide_index=True)
+            else:
+                st.warning("⚠️ Data mahasiswa rusak. Hapus database lama dan daftarkan ulang.")
+                if st.button("🗑️ Hapus Database Rusak", type="secondary"):
+                    if os.path.exists(DB_FILE):
+                        os.remove(DB_FILE)
+                    st.success("✅ Database dihapus. Silakan daftarkan mahasiswa ulang.")
+                    st.rerun()
         else:
             st.info("Belum ada mahasiswa terdaftar.")
 
