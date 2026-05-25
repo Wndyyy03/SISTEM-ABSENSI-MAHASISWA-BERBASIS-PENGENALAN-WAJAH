@@ -15,110 +15,12 @@ from datetime import datetime
 from PIL import Image
 import io
 
-# Menggunakan OpenCV LBPH - ringan dan stabil di Streamlit Cloud
-DEEPFACE_AVAILABLE = False  # Ganti ke LBPH OpenCV
-
-# Inisialisasi LBPH Recognizer
-import json
-
-LBPH_MODEL_FILE = "lbph_model.yml"
-LBPH_LABEL_FILE = "lbph_labels.json"
-
-def muat_lbph_model():
-    try:
-        recognizer = cv2.face.LBPHFaceRecognizer_create()
-        if os.path.exists(LBPH_MODEL_FILE):
-            recognizer.read(LBPH_MODEL_FILE)
-            return recognizer
-    except Exception:
-        pass
-    return None
-
-def simpan_lbph_model(recognizer):
-    recognizer.write(LBPH_MODEL_FILE)
-
-def muat_lbph_labels():
-    if os.path.exists(LBPH_LABEL_FILE):
-        with open(LBPH_LABEL_FILE, 'r') as f:
-            return json.load(f)
-    return {}
-
-def simpan_lbph_labels(labels):
-    with open(LBPH_LABEL_FILE, 'w') as f:
-        json.dump(labels, f, ensure_ascii=False)
-
-def crop_wajah_dari_file(img_path):
-    """Baca foto, deteksi & crop wajah, return grayscale 150x150 (konsisten dengan absensi)."""
-    img_bgr = cv2.imread(img_path)
-    if img_bgr is None:
-        return None
-
-    # Resize dulu agar konsisten (sama seperti saat absensi)
-    h, w = img_bgr.shape[:2]
-    MAX_DIM = 1280
-    if max(h, w) > MAX_DIM:
-        scale = MAX_DIM / max(h, w)
-        img_bgr = cv2.resize(img_bgr, (int(w * scale), int(h * scale)))
-
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    gray = cv2.equalizeHist(gray)  # Sama persis dengan saat absensi
-
-    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-
-    # Coba beberapa parameter
-    params_list = [
-        dict(scaleFactor=1.1, minNeighbors=4, minSize=(50, 50)),
-        dict(scaleFactor=1.05, minNeighbors=3, minSize=(40, 40)),
-        dict(scaleFactor=1.2, minNeighbors=3, minSize=(30, 30)),
-    ]
-    wajah = []
-    for params in params_list:
-        wajah = cascade.detectMultiScale(gray, **params)
-        if len(wajah) > 0:
-            break
-
-    if len(wajah) > 0:
-        x, y, w, h = wajah[0]
-        pad = int(0.1 * min(w, h))
-        x1 = max(0, x - pad)
-        y1 = max(0, y - pad)
-        x2 = min(gray.shape[1], x + w + pad)
-        y2 = min(gray.shape[0], y + h + pad)
-        face = gray[y1:y2, x1:x2]
-    else:
-        face = gray  # Fallback pakai seluruh gambar
-
-    face = cv2.resize(face, (150, 150))
-    # Tidak perlu equalizeHist lagi karena sudah dilakukan di atas
-    return face
-
-def latih_ulang_lbph():
-    """Latih ulang model LBPH dari semua foto yang tersimpan."""
-    db = muat_database()
-    if not db:
-        return None
-    faces = []
-    ids = []
-    id_map = {nim: idx for idx, nim in enumerate(db.keys())}
-    for nim, data in db.items():
-        if not isinstance(data, dict):
-            continue
-        # Cari semua file foto milik NIM ini
-        for fname in os.listdir(DATA_DIR):
-            if fname.startswith(nim) and fname.endswith('.jpg') and 'temp' not in fname:
-                fpath = os.path.join(DATA_DIR, fname)
-                face = crop_wajah_dari_file(fpath)
-                if face is not None:
-                    faces.append(face)
-                    ids.append(id_map[nim])
-    if not faces:
-        return None
-    recognizer = cv2.face.LBPHFaceRecognizer_create(radius=1, neighbors=8, grid_x=8, grid_y=8)
-    recognizer.train(faces, np.array(ids))
-    simpan_lbph_model(recognizer)
-    labels = {str(idx): nim for nim, idx in id_map.items()}
-    simpan_lbph_labels(labels)
-    return recognizer
+# Gunakan DeepFace untuk akurasi tinggi tanpa dlib
+try:
+    from deepface import DeepFace
+    DEEPFACE_AVAILABLE = True
+except ImportError:
+    DEEPFACE_AVAILABLE = False
 
 # ── Konfigurasi Halaman ───────────────────────────────────────────────────────
 st.set_page_config(
@@ -216,7 +118,18 @@ def simpan_database(db):
         pickle.dump(db, f)
 
 def ambil_fitur_wajah_deepface(image_path):
-    """Tidak digunakan - pakai LBPH sekarang."""
+    """Ekstrak embedding 512-dimensi menggunakan DeepFace (Facenet512)."""
+    try:
+        result = DeepFace.represent(
+            img_path=image_path,
+            model_name="Facenet512",
+            enforce_detection=False,
+            detector_backend="opencv"
+        )
+        if result and len(result) > 0:
+            return np.array(result[0]["embedding"])
+    except Exception as e:
+        st.error(f"DeepFace error: {e}")
     return None
 
 def ambil_fitur_wajah_fallback(gray_roi):
@@ -240,73 +153,39 @@ def ambil_fitur_wajah_fallback(gray_roi):
     lbph = lbph / (lbph.sum() + 1e-6)
     return lbph
 
-def cocokkan_wajah_lbph(gray_roi, database):
-    """Kenali wajah dengan LBPH OpenCV - verifikasi ketat."""
-    recognizer = muat_lbph_model()
-    labels = muat_lbph_labels()
-    if recognizer is None or not labels or not database:
-        return None, None, 0.0
-    try:
-        face = cv2.resize(gray_roi, (150, 150))
-        face = cv2.equalizeHist(face)
-        label_id, confidence = recognizer.predict(face)
-
-        # Threshold ketat: hanya lolos jika confidence <= 55
-        # LBPH: 0=sempurna cocok, >55=tidak cukup mirip → tolak
-        # Threshold 65: cukup ketat tapi toleran perbedaan kamera HP vs foto daftar
-        THRESHOLD = 65
-
-        skor = max(0.0, 1.0 - confidence / 200.0)
-
-        if confidence > THRESHOLD:
-            return None, None, skor
-
-        nim = labels.get(str(label_id))
-        if not nim or nim not in database:
-            return None, None, 0.0
-
-        # Verifikasi kedua: bandingkan langsung dengan semua foto tersimpan NIM ini
-        # Ini mencegah false positive saat hanya ada 1 orang di database
-        best_conf = confidence
-        matched = True
-
-        foto_nim = []
-        for fname in os.listdir(DATA_DIR):
-            if fname.startswith(nim) and fname.endswith('.jpg') and 'temp' not in fname:
-                foto_nim.append(os.path.join(DATA_DIR, fname))
-
-        if len(foto_nim) >= 1:
-            # Hitung confidence rata-rata ke semua foto referensi
-            confs = []
-            for fpath in foto_nim:
-                ref = crop_wajah_dari_file(fpath)
-                if ref is not None:
-                    # Buat recognizer sementara dengan 1 foto untuk bandingkan
-                    try:
-                        temp_rec = cv2.face.LBPHFaceRecognizer_create()
-                        temp_rec.train([ref], np.array([0]))
-                        _, c = temp_rec.predict(face)
-                        confs.append(c)
-                    except Exception:
-                        pass
-            if confs:
-                avg_conf = sum(confs) / len(confs)
-                # Jika rata-rata confidence ke foto asli > 70, tolak
-                if avg_conf > 90:
-                    return None, None, 0.0
-                skor = max(0.0, 1.0 - avg_conf / 200.0)
-
-        nama = database[nim].get("nama", nim) if isinstance(database[nim], dict) else str(database[nim])
-        return nim, nama, skor
-
-    except Exception as e:
-        pass
-    return None, None, 0.0
-
 def cocokkan_wajah(encoding_baru, database):
-    """Wrapper - encoding_baru tidak dipakai, pakai gray ROI dari session state."""
-    # Dipanggil dari halaman_absensi - kita handle via cocokkan_wajah_lbph
-    return None, None, 0.0
+    """
+    DeepFace: threshold euclidean distance <= 200 (Facenet512)
+    Fallback: cosine similarity >= 0.92
+    """
+    best_nim, best_nama, best_skor = None, None, 0.0
+    is_deep = DEEPFACE_AVAILABLE and len(encoding_baru) == 512
+
+    for nim, data in database.items():
+        if not isinstance(data, dict) or "encoding" not in data:
+            continue
+        enc_db = data["encoding"]
+        if enc_db is None:
+            continue
+        try:
+            if is_deep and len(enc_db) == 512:
+                jarak = float(np.linalg.norm(encoding_baru - enc_db))
+                skor = max(0.0, 1.0 - jarak / 400.0)
+                cocok = jarak <= 200.0
+            else:
+                a = encoding_baru / (np.linalg.norm(encoding_baru) + 1e-6)
+                b = enc_db / (np.linalg.norm(enc_db) + 1e-6)
+                skor = float(np.dot(a, b))
+                cocok = skor >= 0.92
+            if skor > best_skor:
+                best_skor = skor
+                if cocok:
+                    best_nim  = nim
+                    best_nama = data.get("nama", nim)
+        except Exception:
+            continue
+
+    return best_nim, best_nama, best_skor
 
 def catat_absensi(nim, nama, matkul, kelas):
     sekarang = datetime.now()
@@ -326,35 +205,13 @@ def catat_absensi(nim, nama, matkul, kelas):
     return True, waktu
 
 def deteksi_wajah_dari_gambar(image_bytes):
-    """Deteksi wajah yang robust untuk kamera HP (resolusi tinggi, berbagai kondisi)."""
     nparr = np.frombuffer(image_bytes, np.uint8)
     frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if frame is None:
         return None, None, None
-
-    # Resize jika resolusi terlalu besar (kamera HP bisa 4000x3000+)
-    h, w = frame.shape[:2]
-    MAX_DIM = 1280
-    if max(h, w) > MAX_DIM:
-        scale = MAX_DIM / max(h, w)
-        frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
-
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    # Perbaiki kontras untuk kondisi cahaya kurang/HP
-    gray_eq = cv2.equalizeHist(gray)
-
-    # Coba beberapa parameter dari longgar ke ketat agar deteksi di HP berhasil
-    params_list = [
-        dict(scaleFactor=1.1, minNeighbors=4, minSize=(50, 50)),
-        dict(scaleFactor=1.05, minNeighbors=3, minSize=(40, 40)),
-        dict(scaleFactor=1.2, minNeighbors=3, minSize=(30, 30)),
-    ]
-    for params in params_list:
-        wajah = CASCADE.detectMultiScale(gray_eq, **params)
-        if len(wajah) > 0:
-            return frame, gray_eq, wajah
-
-    return frame, gray_eq, []
+    gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    wajah = CASCADE.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=5, minSize=(60, 60))
+    return frame, gray, wajah
 
 def simpan_gambar_sementara(image_bytes, nim):
     path  = os.path.join(DATA_DIR, f"temp_{nim}.jpg")
@@ -421,15 +278,8 @@ def halaman_login():
                 else:
                     st.error("NIM tidak ditemukan! Hubungi admin untuk mendaftar.")
 
-        st.markdown("""
-        <div style='background:#161b22; border:1px solid #30363d; border-radius:8px;
-                    padding:12px; margin-top:16px; font-size:12px; color:#8b949e'>
-            <b style='color:#ffd740'>Default login:</b><br>
-            Admin → admin / admin123<br>
-            Dosen → dosen / dosen123<br>
-            Mahasiswa → masuk dengan NIM yang sudah terdaftar
-        </div>
-        """, unsafe_allow_html=True)
+
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR NAVIGASI
@@ -531,10 +381,7 @@ def halaman_dashboard():
         st.markdown("#### 📋 Absensi Hari Ini")
         if df_rekap is not None and not df_rekap.empty and "Tanggal" in df_rekap.columns:
             df_hari = df_rekap[df_rekap["Tanggal"] == tanggal_hari_ini]
-            if not df_hari.empty:
-                st.dataframe(df_hari, use_container_width=True, hide_index=True)
-            else:
-                st.info("Belum ada absensi hari ini.")
+            st.dataframe(df_hari, use_container_width=True, hide_index=True) if not df_hari.empty else st.info("Belum ada absensi hari ini.")
         else:
             st.info("Belum ada data absensi.")
 
@@ -561,7 +408,10 @@ def halaman_absensi():
     </div>
     """, unsafe_allow_html=True)
 
-    st.success("🤖 Menggunakan **OpenCV LBPH** — ringan, cepat, dan akurat untuk pengenalan wajah.")
+    if DEEPFACE_AVAILABLE:
+        st.success("🤖 Menggunakan **DeepFace (Facenet512)** — akurasi tinggi, sulit ditipu.")
+    else:
+        st.warning("⚠️ DeepFace tidak terinstall. Tambahkan `deepface` ke `requirements.txt`. Saat ini menggunakan metode LBPH.")
 
     db = muat_database()
     if not db:
@@ -611,16 +461,17 @@ def halaman_absensi():
 
             else:
                 (x, y, fw, fh) = wajah_list[0]
-                # Crop wajah dengan padding untuk hasil lebih baik
-                pad = int(0.1 * min(fw, fh))
-                x1 = max(0, x - pad)
-                y1 = max(0, y - pad)
-                x2 = min(gray.shape[1], x + fw + pad)
-                y2 = min(gray.shape[0], y + fh + pad)
-                roi = gray[y1:y2, x1:x2]
+                roi = gray[y:y+fh, x:x+fw]
 
-                # Gunakan LBPH OpenCV langsung
-                nim, nama, skor = cocokkan_wajah_lbph(roi, db)
+                if DEEPFACE_AVAILABLE:
+                    img_path = simpan_gambar_sementara(foto_bytes, "absensi_temp")
+                    encoding = ambil_fitur_wajah_deepface(img_path)
+                    if encoding is None:
+                        encoding = ambil_fitur_wajah_fallback(roi)
+                else:
+                    encoding = ambil_fitur_wajah_fallback(roi)
+
+                nim, nama, skor = cocokkan_wajah(encoding, db)
 
                 if nim:
                     cv2.rectangle(tampilan, (x,y), (x+fw,y+fh), (0,255,0), 3)
@@ -644,9 +495,8 @@ def halaman_absensi():
                     st.image(Image.fromarray(cv2.cvtColor(tampilan, cv2.COLOR_BGR2RGB)), use_column_width=True)
                     st.markdown(f"""
                     <div class='gagal-box'>
-                        ❌ Wajah tidak dikenali / tidak terdaftar<br>
-                        <span style='font-size:13px'>Wajah tidak cocok dengan siapapun di database.<br>
-                        Pastikan: pencahayaan cukup, wajah menghadap kamera, dan mahasiswa sudah terdaftar.</span>
+                        ❌ Wajah tidak dikenali<br>
+                        <span style='font-size:13px'>Skor: {skor*100:.1f}% — pastikan pencahayaan cukup dan wajah menghadap kamera.</span>
                     </div>
                     """, unsafe_allow_html=True)
         else:
@@ -716,33 +566,26 @@ def halaman_daftar():
                     elif len(wajah_list) > 1:
                         st.error("Lebih dari 1 wajah. Gunakan foto 1 orang saja.")
                     else:
-                        (x, y, fw, fh) = wajah_list[0]
-                        # Crop wajah dengan padding lalu simpan
-                        pad = int(0.1 * min(fw, fh))
-                        x1 = max(0, x - pad)
-                        y1 = max(0, y - pad)
-                        x2 = min(frame.shape[1], x + fw + pad)
-                        y2 = min(frame.shape[0], y + fh + pad)
-                        wajah_crop = frame[y1:y2, x1:x2]
-
                         nama_file = f"{nim}_{nama.replace(' ','_')}.jpg"
                         img_path  = os.path.join(DATA_DIR, nama_file)
-                        cv2.imwrite(img_path, wajah_crop)  # simpan crop wajah saja
+                        cv2.imwrite(img_path, frame)
 
-                        # Simpan ke database
-                        db = muat_database()
-                        db[nim] = {"nama": nama.strip(), "nim": nim.strip(), "encoding": None}
-                        simpan_database(db)
-
-                        # Latih ulang model LBPH
-                        with st.spinner("Melatih model pengenalan wajah..."):
-                            model = latih_ulang_lbph()
-
-                        if model:
-                            st.success(f"✅ **{nama}** ({nim}) berhasil didaftarkan! Total: {len(db)} mahasiswa.")
-                            st.balloons()
+                        if DEEPFACE_AVAILABLE:
+                            encoding = ambil_fitur_wajah_deepface(img_path)
+                            metode   = "DeepFace Facenet512"
                         else:
-                            st.warning("Mahasiswa tersimpan tapi model belum bisa dilatih. Coba daftar ulang.")
+                            (x,y,fw,fh) = wajah_list[0]
+                            encoding = ambil_fitur_wajah_fallback(gray[y:y+fh, x:x+fw])
+                            metode   = "LBPH fallback"
+
+                        if encoding is None:
+                            st.error("Gagal mengekstrak fitur wajah. Coba foto lain.")
+                        else:
+                            db = muat_database()
+                            db[nim] = {"nama": nama.strip(), "nim": nim.strip(), "encoding": encoding}
+                            simpan_database(db)
+                            st.success(f"✅ **{nama}** ({nim}) berhasil didaftarkan dengan {metode}! Total: {len(db)} mahasiswa.")
+                            st.balloons()
 
     with tab2:
         db = muat_database()
