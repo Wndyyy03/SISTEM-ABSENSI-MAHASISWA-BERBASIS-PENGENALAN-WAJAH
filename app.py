@@ -423,11 +423,6 @@ def halaman_absensi():
     </div>
     """, unsafe_allow_html=True)
 
-    if DEEPFACE_AVAILABLE:
-        st.success("🤖 Menggunakan **DeepFace (Facenet512)** — akurasi tinggi, sulit ditipu.")
-    else:
-        st.warning("⚠️ DeepFace tidak terinstall. Tambahkan `deepface` ke `requirements.txt`. Saat ini menggunakan metode LBPH.")
-
     db = muat_database()
     if not db:
         st.warning("⚠️ Database kosong! Daftarkan mahasiswa dulu di menu Daftar Mahasiswa.")
